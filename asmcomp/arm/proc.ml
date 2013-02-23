@@ -137,6 +137,40 @@ let calling_conventions
   done;
   (loc, Misc.align !ofs 8)  (* keep stack 8-aligned *)
 
+let calling_conventions_intreg first_int last_int make_stack arg =
+  (* The same as calling_conventions, except that floats are passed in
+   * pairs of int registers.  These are the conventions of iOS.  To
+   * avoid making too many changes, the value is represented as a
+   * single register (the smaller one).  Functions in emit.mlp can tell
+   * what to do by observing the type.
+   *)
+  let loc = Array.create (Array.length arg) Reg.dummy in
+  let int = ref first_int in
+  let ofs = ref 0 in
+  for i = 0 to Array.length arg - 1 do
+    match arg.(i).typ with
+      Int | Addr as ty ->
+        if !int <= last_int then begin
+          loc.(i) <- phys_reg !int;
+          incr int
+        end else begin
+          loc.(i) <- stack_slot (make_stack !ofs) ty;
+          ofs := !ofs + size_int
+        end
+    | Float ->
+        assert (abi = EABI_VFP);
+        assert (!fpu >= VFPv3_D16);
+        if !int <= last_int - 1 then begin
+          loc.(i) <- phys_reg !int;
+          int := !int + 2
+        end else begin
+          ofs := Misc.align !ofs size_float;
+          loc.(i) <- stack_slot (make_stack !ofs) Float;
+          ofs := !ofs + size_float
+        end
+  done;
+  (loc, Misc.align !ofs 8)  (* keep stack 8-aligned *)
+
 let incoming ofs = Incoming ofs
 let outgoing ofs = Outgoing ofs
 let not_supported ofs = fatal_error "Proc.loc_results: cannot call"
@@ -154,16 +188,37 @@ let loc_parameters arg =
 let loc_results res =
   let (loc, _) = calling_conventions 0 7 100 115 not_supported res in loc
 
-(* C calling convention:
+(* C calling convention for Linux:
      first integer args in r0...r3
      first float args in d0...d7 (EABI+VFP)
      remaining args on stack.
-   Return values in r0...r1 or d0. *)
+   Return values in r0...r1 or d0
+
+   C calling convention for iOS:
+     first integer args in r0...r3
+     first float args in pairs of regs r0/r1, r1/r2, or r2/r3
+     remaining args on stack.
+   Return values in r0 or r0/r1 for floats. *)
 
 let loc_external_arguments arg =
-  calling_conventions 0 3 100 107 outgoing arg
+  if Config.system = "macosx" then
+    calling_conventions_intreg 0 3 outgoing arg
+  else
+    calling_conventions 0 3 100 107 outgoing arg
+
 let loc_external_results res =
-  let (loc, _) = calling_conventions 0 1 100 100 not_supported res in loc
+  if Config.system = "macosx" then
+    let (loc, _) = calling_conventions_intreg 0 1 not_supported res in
+    if Array.length res < 1 || res.(0).typ <> Float then loc
+    else
+      (* If the result is Float, mark as a register pair by changing the
+       * register name.  Code in selection.ml knows to look for it.
+       * This is hacky but lots of the code seems to depend on the
+       * result being a single register.
+       *)
+      [| { loc.(0) with name = loc.(0).name ^ "+" } |]
+  else
+    let (loc, _) = calling_conventions 0 1 100 100 not_supported res in loc
 
 let loc_exn_bucket = phys_reg 0
 

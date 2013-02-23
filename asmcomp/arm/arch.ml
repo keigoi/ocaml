@@ -26,6 +26,7 @@ let abi =
   match Config.system with
     "linux_eabi"   -> EABI
   | "linux_eabihf" -> EABI_VFP
+  | "macosx" -> EABI_VFP
   | _ -> assert false
 
 let string_of_arch = function
@@ -45,15 +46,26 @@ let string_of_fpu = function
 
 let (arch, fpu, thumb) =
   let (def_arch, def_fpu, def_thumb) =
-    begin match abi, Config.model with
+    begin match abi, Config.system, Config.model with
     (* Defaults for architecture, FPU and Thumb *)
-      EABI, "armv5"   -> ARMv5,   Soft,      false
-    | EABI, "armv5te" -> ARMv5TE, Soft,      false
-    | EABI, "armv6"   -> ARMv6,   Soft,      false
-    | EABI, "armv6t2" -> ARMv6T2, Soft,      false
-    | EABI, "armv7"   -> ARMv7,   Soft,      false
-    | EABI, _         -> ARMv4,   Soft,      false
-    | EABI_VFP, _     -> ARMv7,   VFPv3_D16, true
+      EABI, ("linux_eabi"|"linux_eabihf"), "armv5"   ->
+        ARMv5,   Soft,      false
+    | EABI, ("linux_eabi"|"linux_eabihf"), "armv5te" ->
+        ARMv5TE, Soft,      false
+    | EABI, ("linux_eabi"|"linux_eabihf"), "armv6"   ->
+        ARMv6,   Soft,      false
+    | EABI, ("linux_eabi"|"linux_eabihf"), "armv6t2" ->
+        ARMv6T2, Soft,      false
+    | EABI, ("linux_eabi"|"linux_eabihf"), "armv7"   ->
+        ARMv7,   Soft,      false
+    | EABI_VFP, "macosx", "armv6" ->
+        ARMv6,   VFPv3_D16, false (* Really VFPv2 *)
+    | EABI_VFP, "macosx", "armv7" ->
+        ARMv7,   VFPv3,     true
+    | EABI, _, _         ->
+        ARMv4,   Soft,      false
+    | EABI_VFP, _, _     ->
+        ARMv7,   VFPv3_D16, true
     end in
   (ref def_arch, ref def_fpu, ref def_thumb)
 

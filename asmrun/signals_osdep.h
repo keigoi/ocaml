@@ -34,7 +34,7 @@
 
 /****************** AMD64, MacOSX */
 
-#elif defined(TARGET_amd64) && defined (SYS_macosx)
+#elif (defined(TARGET_amd64) || (defined(TARGET_arm) && defined(__x86_64))) && defined (SYS_macosx)
 
   #define DECLARE_SIGNAL_HANDLER(name) \
     static void name(int sig, siginfo_t * info, void * context)
@@ -125,7 +125,7 @@
 
 /****************** I386, MacOS X */
 
-#elif defined(TARGET_i386) && defined(SYS_macosx)
+#elif (defined(TARGET_i386) || (defined(TARGET_arm) && defined(__i386))) && defined(SYS_macosx)
 
   #define DECLARE_SIGNAL_HANDLER(name) \
     static void name(int sig, siginfo_t * info, void * context)

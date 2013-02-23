@@ -762,7 +762,10 @@ clean::
 
 package-macosx:
 	sudo rm -rf package-macosx/root
-	$(MAKE) PREFIX="`pwd`"/package-macosx/root install
+	$(MAKE) BINDIR="`pwd`"/package-macosx/root/v7/bin \
+		LIBDIR="`pwd`"/package-macosx/root/v7/lib/ocaml \
+		MANDIR="`pwd`"/package-macosx/root/v7/man \
+		install
 	tools/make-package-macosx
 	sudo rm -rf package-macosx/root
 
