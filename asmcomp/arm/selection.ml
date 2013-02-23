@@ -264,6 +264,57 @@ method! insert_op_debug op dbg rs rd =
   with Use_default ->
     super#insert_op_debug op dbg rs rd
 
+(* Here we handle floating returns in iOS, which are in r0/r1 as a pair.
+ * Proc.loc_external_results can return a fake register that represents
+ * the pair.  We detect it and replace it with two separate registers,
+ * which allows the liveness analysis to notice that both are in use.
+ *)
+method private loc_external_res_ispair = function
+    { loc = Reg _; name = name } ->
+      let l = String.length name in l > 0 && name.[l - 1] = '+'
+  | _ -> false
+
+
+method insert_debug desc dbg arg res =
+  (* Here, res.(0) might be a register pair.
+   *)
+  let res' =
+    if Array.length res > 0 && self#loc_external_res_ispair res.(0) then
+      match res.(0) with
+        { loc = Reg n } -> [| Proc.phys_reg n; Proc.phys_reg (n + 1) |]
+      | _ -> res
+    else res in
+  super#insert_debug desc dbg arg res'
+
+method insert_move_args arg loc stacksize =
+  (* Here we have a register pair as the target if the source is Float
+   * and the target is a physical register.
+   *)
+  if stacksize <> 0 then self#insert (Iop(Istackoffset stacksize)) [||] [||];
+  for i = 0 to Array.length arg - 1 do
+    match arg.(i).typ, loc.(i).loc with
+      (Float, Reg n) ->
+        let rpair = [| Proc.phys_reg n; Proc.phys_reg (n + 1) |] in
+        self#insert (Iop Imove) [|arg.(i)|] rpair
+      | _ ->
+        self#insert_move arg.(i) loc.(i)
+  done
+
+method insert_move_results loc res stacksize =
+  (* Here, loc.(0) might be a register pair.
+   *)
+  if stacksize <> 0 then
+    self#insert (Iop(Istackoffset(-stacksize))) [||] [||];
+  for i = 0 to Array.length loc - 1 do
+    if self#loc_external_res_ispair loc.(i) then
+      match loc.(i) with
+        { loc = Reg n } ->
+          let rpair = [| Proc.phys_reg n; Proc.phys_reg (n + 1) |] in
+          self#insert (Iop Imove) rpair [|res.(i)|]
+      | _ -> self#insert_move loc.(i) res.(i)
+    else
+      self#insert_move loc.(i) res.(i)
+  done
 end
 
 let fundecl f = (new selector)#emit_fundecl f

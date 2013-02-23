@@ -17,7 +17,7 @@
 cd package-macosx
 rm -rf ocaml.pkg ocaml-rw.dmg
 
-VERSION=`sed -e 1q ../VERSION`
+VERSION=`sed -n -e '1s/-[^-]*$//p' ../VERSION`
 VERSION_MAJOR=`sed -n -e '1s/^\([0-9]*\)\..*/\1/p' ../VERSION`
 VERSION_MINOR=`sed -n -e '1s/^[0-9]*\.\([0-9]*\)[.+].*/\1/p' ../VERSION`
 
@@ -46,11 +46,11 @@ cat >Info.plist <<EOF
 <plist version="1.0">
 <dict>
         <key>CFBundleGetInfoString</key>
-        <string>OCaml ${VERSION}</string>
+        <string>OCaml ${VERSION} for iOS</string>
         <key>CFBundleIdentifier</key>
-        <string>fr.inria.ocaml</string>
+        <string>com.psellos.ocamlxarm</string>
         <key>CFBundleName</key>
-        <string>OCaml</string>
+        <string>OCaml for iOS</string>
         <key>CFBundleShortVersionString</key>
         <string>${VERSION}</string>
         <key>IFMajorVersion</key>
@@ -62,7 +62,7 @@ cat >Info.plist <<EOF
         <key>IFPkgFlagAuthorizationAction</key>
         <string>AdminAuthorization</string>
         <key>IFPkgFlagDefaultLocation</key>
-        <string>/usr/local</string>
+        <string>/usr/local/ocamlxarm</string>
         <key>IFPkgFlagInstallFat</key>
         <false/>
         <key>IFPkgFlagIsRequired</key>
@@ -85,15 +85,16 @@ mkdir -p resources
 
 #                                         stop here -> |
 cat >resources/ReadMe.txt <<EOF
-This package installs OCaml version ${VERSION}.
-You need Mac OS X 10.7.x (Lion), with the
+This package installs OCaml version ${VERSION},
+for cross compiling to iOS (iPhone, iPad).
+You need Mac OS X 10.7.x (Lion) or later, with the
 XCode tools installed (v4.3.3 or later).
 
 Files will be installed in the following directories:
 
-/usr/local/bin - command-line executables
-/usr/local/lib/ocaml - library and support files
-/usr/local/man - manual pages
+/usr/local/ocamlxarm/v7/bin - armv7 command-line executables
+/usr/local/ocamlxarm/v7/lib/ocaml - armv7 library and support files
+/usr/local/ocamlxarm/v7/man - armv7 manual pages
 
 Note that this package installs only command-line
 tools and does not include any GUI application.
@@ -102,7 +103,7 @@ EOF
 chmod -R g-w root
 sudo chown -R root:wheel root
 
-/Developer/Applications/Utilities/PackageMaker.app/Contents/MacOS/PackageMaker \
+/Developer/Auxiliary\ Tools/PackageMaker.app/Contents/MacOS/PackageMaker \
   -build -p "`pwd`/ocaml.pkg" -f "`pwd`/root" -i "`pwd`/Info.plist" \
   -d "`pwd`/Description.plist" -r "`pwd`/resources"
 
