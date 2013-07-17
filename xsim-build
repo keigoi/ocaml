@@ -23,7 +23,7 @@
 SED=/usr/bin/sed
 
 export PLT=/Applications/Xcode.app/Contents/Developer/Platforms/iPhoneSimulator.platform
-export SDK=/Developer/SDKs/iPhoneSimulator6.0.sdk
+export SDK=/Developer/SDKs/iPhoneSimulator6.1.sdk
 export XSIMTARGET=/usr/local/ocamlxsim
 export OSXARCH=i386
 
