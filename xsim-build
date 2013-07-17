@@ -1,4 +1,5 @@
 #!/bin/sh
+set -e
 #
 # Build OCamlXSim, OCaml cross-compiler for iOS Simulator, based on
 # OCaml 4.00.0
@@ -71,7 +72,7 @@ build1 () {
         mv -f asmrun/Makefile asmrun/Makefile.aside
     $SED -e '/^[ 	]*ASMOBJS[ 	]*=/s/^/#/' \
         asmrun/Makefile.aside > asmrun/Makefile
-    make world && make opt
+    make -j8 world && make -j8 opt
     mv -f asmrun/Makefile.aside asmrun/Makefile
     trap - EXIT
     # Save the Phase 1 shared (dynamically loadable) libraries and
@@ -118,15 +119,15 @@ config2 () {
 build2 () {
     # Make iOSSim runtime
     echo 'xsim-build: ----- build phase 2 -----'
-    cd asmrun; make all; cd ..
-    cd stdlib; make all allopt; cd ..
-    cd otherlibs/unix; make all allopt; cd ../..
-    cd otherlibs/str; make all allopt; cd ../..
-    cd otherlibs/num; make all allopt; cd ../..
-    cd otherlibs/dynlink; make all allopt; cd ../..
-    cd otherlibs/bigarray; make all allopt; cd ../..
-    cd otherlibs/systhreads; make all allopt; cd ../..
-    cd otherlibs/threads; make all allopt; cd ../..
+    cd asmrun; make -j8 all; cd ..
+    cd stdlib; make -j8 all allopt; cd ..
+    cd otherlibs/unix; make -j8 all allopt; cd ../..
+    cd otherlibs/str; make -j8 all allopt; cd ../..
+    cd otherlibs/num; make -j8 all allopt; cd ../..
+    cd otherlibs/dynlink; make -j8 all allopt; cd ../..
+    cd otherlibs/bigarray; make -j8 all allopt; cd ../..
+    cd otherlibs/systhreads; make -j8 all allopt; cd ../..
+    cd otherlibs/threads; make -j8 all allopt; cd ../..
     # Restore the saved Phase 1 .so files (see above).
     find . -name '*.sophase1' -print | \
         while read f; do \
