@@ -85,6 +85,13 @@ let emit_label lbl =
 let emit_data_label lbl =
   emit_string label_prefix; emit_string "d"; emit_int lbl
 
+(* Emit truncated native int, necessary when cross compiling from 64 to
+ * 32 bit environments.  For the usual self-hosted 32-bit environment
+ * this acts exactly like emit_nativeint.
+ *)
+let emit_t_nativeint n =
+    emit_int32 (Nativeint.to_int32 n)
+
 
 (* Some data directives have different names under Solaris *)
 
@@ -451,7 +458,7 @@ let emit_instr fallthrough i =
             Reg n -> `	xorl	{emit_reg i.res.(0)}, {emit_reg i.res.(0)}\n`
           | _     -> `	movl	$0, {emit_reg i.res.(0)}\n`
         end else
-          `	movl	${emit_nativeint n}, {emit_reg i.res.(0)}\n`
+          `	movl	${emit_t_nativeint n}, {emit_reg i.res.(0)}\n`
     | Lop(Iconst_float s) ->
         begin match Int64.bits_of_float (float_of_string s) with
         | 0x0000_0000_0000_0000L ->       (* +0.0 *)
@@ -685,7 +692,7 @@ let emit_instr fallthrough i =
     | Lop(Ispecific(Ilea addr)) ->
         `	lea	{emit_addressing addr i.arg 0}, {emit_reg i.res.(0)}\n`
     | Lop(Ispecific(Istore_int(n, addr))) ->
-        `	movl	${emit_nativeint n}, {emit_addressing addr i.arg 0}\n`
+        `	movl	${emit_t_nativeint n}, {emit_addressing addr i.arg 0}\n`
     | Lop(Ispecific(Istore_symbol(s, addr))) ->
         `	movl	${emit_symbol s}, {emit_addressing addr i.arg 0}\n`
     | Lop(Ispecific(Ioffset_loc(n, addr))) ->
@@ -712,7 +719,7 @@ let emit_instr fallthrough i =
               stack_offset := !stack_offset + 4
         done
     | Lop(Ispecific(Ipush_int n)) ->
-        `	pushl	${emit_nativeint n}\n`;
+        `	pushl	${emit_t_nativeint n}\n`;
         cfi_adjust_cfa_offset 4;
         stack_offset := !stack_offset + 4
     | Lop(Ispecific(Ipush_symbol s)) ->
@@ -961,9 +968,9 @@ let emit_item = function
   | Cint16 n ->
       `	{emit_string word_dir}	{emit_int n}\n`
   | Cint32 n ->
-      `	.long	{emit_nativeint n}\n`
+      `	.long	{emit_t_nativeint n}\n`
   | Cint n ->
-      `	.long	{emit_nativeint n}\n`
+      `	.long	{emit_t_nativeint n}\n`
   | Csingle f ->
       emit_float32_directive ".long" f
   | Cdouble f ->

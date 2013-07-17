@@ -1,0 +1,169 @@
+#!/bin/sh
+#
+# Build OCamlXSim, OCaml cross-compiler for iOS Simulator, based on
+# OCaml 4.00.0
+#
+# Jeffrey Scofield, jeffsco@psellos.com
+#
+# Copyright (c) 2012 Psellos   http://psellos.com/
+# Licensed under the MIT License:
+#     http://www.opensource.org/licenses/mit-license.php
+#
+# Page of OCaml-on-iOS resources: http://psellos.com/ocaml/
+#
+# Expects one parameter:
+# Single big step:  all
+# Medium steps:     phase1           phase2
+# Small steps:      config1  build1  config2  build2
+
+# We use fancy features of the sed that comes with OS X.  For now,
+# specify full path.  If this becomes a problem, stop using the fancy
+# features.
+#
+SED=/usr/bin/sed
+
+export PLT=/Applications/Xcode.app/Contents/Developer/Platforms/iPhoneSimulator.platform
+export SDK=/Developer/SDKs/iPhoneSimulator6.0.sdk
+export XSIMTARGET=/usr/local/ocamlxsim
+export OSXARCH=i386
+
+# Small steps
+config1 () {
+    # Configure for building bytecode interpreter to run on Intel OS X.
+    # But specify iOSSim parameters for assembly and partial link.
+    echo 'xsim-build: ----- configure phase 1 -----'
+    ./configure \
+            -bindir $XSIMTARGET/bin \
+            -libdir $XSIMTARGET/lib/ocaml \
+            -mandir $XSIMTARGET/man/man1 \
+            -no-curses \
+            -no-tk \
+            -no-graph \
+            -host i386-apple-darwin11.3.0 \
+            -cc "gcc -arch $OSXARCH" \
+            -as "$PLT/Developer/usr/bin/gcc -arch i386 -c" \
+            -aspp "$PLT/Developer/usr/bin/gcc -arch i386 -c"
+    # Post-modify config/Makefile to select i386 back end for ocamlopt
+    # (i386 assembly code).
+    $SED -i .bak \
+        -e '1i\
+# modified by xsim-build for OCamlXSim' \
+        -e 's/^ARCH[    ]*=.*/ARCH=i386/' \
+        -e 's/^MODEL[    ]*=.*/MODEL=default/' \
+        -e "s#^PARTIALLD[    ]*=.*#PARTIALLD=$PLT/Developer/usr/bin/ld -r#" \
+        config/Makefile
+    # Post-modify utils/config.ml
+    make utils/config.ml
+    $SED -i .bak \
+        -e 's#let[ 	][ 	]*mkexe[ 	]*=.*#let mkexe ="'"$PLT/Developer/usr/bin/gcc -arch i386 -Wl,-objc_abi_version,2 -Wl,-no_pie -gdwarf-2 -isysroot $PLT$SDK"'"#' \
+        -e 's#let[ 	][ 	]*bytecomp_c_compiler[ 	]*=.*#let bytecomp_c_compiler ="'"$PLT/Developer/usr/bin/gcc -arch i386 -gdwarf-2 -isysroot $PLT$SDK"'"#' \
+        -e 's#let[ 	][ 	]*native_c_compiler[ 	]*=.*#let native_c_compiler ="'"$PLT/Developer/usr/bin/gcc -arch i386 -gdwarf-2 -isysroot $PLT$SDK"'"#' \
+        utils/config.ml
+}
+
+build1 () {
+    echo 'xsim-build: ----- build phase 1 -----'
+    # Don't assemble asmrun/i386.S for Phase 1 build.  Modify
+    # asmrun/Makefile temporarily to disable.  Be really sure to put
+    # back for Phase 2.
+    trap 'mv -f asmrun/Makefile.aside asmrun/Makefile' EXIT
+    grep -q '^[ 	]*ASMOBJS[ 	]*=' asmrun/Makefile && \
+        mv -f asmrun/Makefile asmrun/Makefile.aside
+    $SED -e '/^[ 	]*ASMOBJS[ 	]*=/s/^/#/' \
+        asmrun/Makefile.aside > asmrun/Makefile
+    make world && make opt
+    mv -f asmrun/Makefile.aside asmrun/Makefile
+    trap - EXIT
+    # Save the Phase 1 shared (dynamically loadable) libraries and
+    # restore them after Phase 2.  They're required by some OCaml
+    # utilities, such as camlp4.
+    #
+    # The shared libraries are useful only with the bytecode
+    # interpreter, which we don't support under iOS.  This lets us (just
+    # barely) fit OCamlXSim into the form of a usual OCaml release.
+    find . -name '*.so' -exec mv {} {}phase1 \;
+}
+
+config2 () {
+    # Clean out OS X runtime
+    echo 'xsim-build: ----- configure phase 2 -----'
+    cd asmrun; make clean; cd ..
+    cd stdlib; make clean; cd ..
+    cd otherlibs/bigarray; make clean; cd ../..
+    cd otherlibs/dynlink; make clean; cd ../..
+    cd otherlibs/num; make clean; cd ../..
+    cd otherlibs/str; make clean; cd ../..
+    cd otherlibs/systhreads; make clean; cd ../..
+    cd otherlibs/threads; make clean; cd ../..
+    cd otherlibs/unix; make clean; cd ../..
+    # Reconfigure for iOSSim environment
+    ./configure \
+            -bindir $XSIMTARGET/bin \
+            -libdir $XSIMTARGET/lib/ocaml \
+            -mandir $XSIMTARGET/man/man1 \
+            -no-curses \
+            -no-tk \
+            -no-graph \
+            -host i386-apple-darwin10.0.0d3 \
+            -cc "$PLT/Developer/usr/bin/gcc -arch i386 -gdwarf-2 -isysroot $PLT$SDK" \
+            -as "$PLT/Developer/usr/bin/gcc -arch i386 -c" \
+            -aspp "$PLT/Developer/usr/bin/gcc -arch i386 -c"
+    # Rebuild ocamlmklib, so libraries work with iOSSim.
+    rm myocamlbuild_config.ml
+    cd tools
+    make ocamlmklib
+    cd ..
+}
+
+build2 () {
+    # Make iOSSim runtime
+    echo 'xsim-build: ----- build phase 2 -----'
+    cd asmrun; make all; cd ..
+    cd stdlib; make all allopt; cd ..
+    cd otherlibs/unix; make all allopt; cd ../..
+    cd otherlibs/str; make all allopt; cd ../..
+    cd otherlibs/num; make all allopt; cd ../..
+    cd otherlibs/dynlink; make all allopt; cd ../..
+    cd otherlibs/bigarray; make all allopt; cd ../..
+    cd otherlibs/systhreads; make all allopt; cd ../..
+    cd otherlibs/threads; make all allopt; cd ../..
+    # Restore the saved Phase 1 .so files (see above).
+    find . -name '*.sophase1' -print | \
+        while read f; do \
+            fso="$(expr "$f" : '\(.*\)sophase1$')so"; mv -f $f $fso; \
+        done
+}
+
+# Bigger steps
+
+phase1 () {
+    config1 && build1
+}
+
+phase2 () {
+    config2 && build2
+}
+
+all () {
+    phase1 && phase2
+}
+
+clean () {
+    rm -f myocamlbuild_config.ml
+    make clean
+}
+
+case "$1" in
+config1) config1 ;;
+build1) build1 ;;
+config2) config2 ;;
+build2) build2 ;;
+phase1) phase1 ;;
+phase2) phase2 ;;
+all) all ;;
+clean) clean ;;
+*) echo "usage: $(basename $0) {all|phase1|phase2|config1|build1|config2|build2}" >&2;
+   echo "       $(basename $0) clean" >&2;
+   exit 1
+   ;;
+esac
