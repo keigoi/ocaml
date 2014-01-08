@@ -106,23 +106,6 @@ let merge_constraint initial_env loc sg lid constr =
     | (Tsig_type(id, decl, rs) :: rem, [s],
        Pwith_type ({ptype_kind = Ptype_private scl} as sdecl))
       when Ident.name id = s ->
-<<<<<<< HEAD
-        let decl_row =
-          { type_params =
-              List.map (fun _ -> Btype.newgenvar()) sdecl.ptype_params;
-            type_arity = List.length sdecl.ptype_params;
-            type_kind = Type_abstract;
-            type_manifest = None;
-            type_variance =
-              List.map (fun (c,n) -> (not n, not c, not c))
-              sdecl.ptype_variance }
-        and id_row = Ident.create (s^"#row") in
-        let initial_env = Env.add_type id_row decl_row initial_env in
-        let newdecl = Typedecl.transl_with_constraint
-                        initial_env id (Some(Pident id_row)) sdecl in
-        check_type_decl env id row_id newdecl decl rs rem;
-        let decl_row = {decl_row with type_params = newdecl.type_params} in
-=======
         let s' = s ^ "#row" in
 	let decl_row =
           Typedecl.transl_with_constraint env id None
@@ -133,7 +116,6 @@ let merge_constraint initial_env loc sg lid constr =
           Typedecl.transl_with_constraint initial_env id
             (Some(Pident id_row)) sdecl in
         check_type_decl env id row_id newdecl decl rs rem;
->>>>>>> origin/varunion
         let rs' = if rs = Trec_first then Trec_not else rs in
         Tsig_type(id_row, decl_row, rs') :: Tsig_type(id, newdecl, rs) ::
         let rec insert_matcher = function

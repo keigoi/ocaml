@@ -632,13 +632,6 @@ let compute_variance_decls env cldecls =
        {cltydef with clty_variance = variance}))
     decls cldecls
 
-<<<<<<< HEAD
-(* Force recursion to go through id for private types*)
-let name_recursion sdecl id decl =
-  match decl with
-    { type_kind = Type_abstract; type_manifest = Some ty }
-    when sdecl.ptype_kind = Ptype_private ->
-=======
 (* Check compatibilities where needed *)
 let check_compat_decl env (_,loc) (_,decl) =
   match decl with
@@ -674,7 +667,6 @@ let check_compat_decl env (_,loc) (_,decl) =
 let name_recursion id decl =
   match decl with
     { type_kind = Type_private _; type_manifest = Some ty } ->
->>>>>>> origin/varunion
       let ty = Ctype.repr ty in
       let ty' = Btype.newty2 ty.level ty.desc in
       if Ctype.deep_occur ty ty' then
@@ -756,14 +748,7 @@ let transl_type_decl env name_sdecl_list =
   (* Check that constraints are enforced *)
   List.iter2 (check_constraints newenv) name_sdecl_list decls;
   (* Name recursion *)
-<<<<<<< HEAD
-  let decls =
-    List.map2 (fun (_, sdecl) (id, decl) -> id, name_recursion sdecl id decl)
-      name_sdecl_list decls
-  in
-=======
   let decls = List.map (fun (id, decl) -> id, name_recursion id decl) decls in
->>>>>>> origin/varunion
   (* Add variances to the environment *)
   let required =
     List.map (fun (_, sdecl) -> sdecl.ptype_variance, sdecl.ptype_loc)
@@ -856,11 +841,7 @@ let transl_with_constraint env id row_path sdecl =
   begin match Ctype.closed_type_decl decl with None -> ()
   | Some ty -> raise(Error(sdecl.ptype_loc, Unbound_type_var(ty,decl)))
   end;
-<<<<<<< HEAD
-  let decl = name_recursion sdecl id decl in
-=======
   let decl = name_recursion id decl in
->>>>>>> origin/varunion
   let decl =
     {decl with type_variance =
      compute_variance_decl env false decl

@@ -1913,15 +1913,12 @@ and unify_row env row1 row2 =
         with Not_found -> ())
       r2
   end;
-<<<<<<< HEAD
-=======
   let is_constr ty =
     match repr ty with {desc=Tconstr _} -> true | _ -> false in
   let row_abs row =
     if is_constr row.row_more then row_more row :: row.row_abs else row.row_abs
   in
   let abs1, abs2, apairs = merge_row_abs (row_abs row1) (row_abs row2) in
->>>>>>> origin/varunion
   let more =
     if row1.row_fixed then rm1 else
     if row2.row_fixed then rm2 else
@@ -1985,13 +1982,8 @@ and unify_row env row1 row2 =
   in
   let md1 = rm1.desc and md2 = rm2.desc in
   begin try
-<<<<<<< HEAD
-    set_more row2 r1;
-    set_more row1 r2;
-=======
     set_more row1 r2 abs2;
     set_more row2 r1 abs1;
->>>>>>> origin/varunion
     List.iter
       (fun (l,f1,f2) ->
         try unify_row_field env row1.row_fixed row2.row_fixed l f1 f2
@@ -2581,11 +2573,8 @@ let equal env rename tyl1 tyl2 =
   with
     Unify _ -> false
 
-<<<<<<< HEAD
-=======
 let () = equal' := equal
 
->>>>>>> origin/varunion
 (* Must empty univar_pairs first *)
 let eqtype rename type_pairs subst env t1 t2 =
   univar_pairs := [];

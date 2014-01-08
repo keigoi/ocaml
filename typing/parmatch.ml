@@ -771,14 +771,6 @@ let build_other ext env =  match env with
         let all_tags =  List.map (fun (p,_) -> get_tag p) env in
         pat_of_constrs p (complete_constrs p all_tags)
     end
-<<<<<<< HEAD
-| ({pat_desc = Tpat_variant(_,_,row)} as p,_) :: _ ->
-    let tags =
-      List.map
-        (function ({pat_desc = Tpat_variant (tag, _, _)}, _) -> tag
-                | _ -> assert false)
-        env
-=======
 | ({pat_desc = Tpat_variant(_,_,row) | Tpat_check(_,row)} as p,_) :: _ ->
     let tags, abs =
       List.fold_left
@@ -787,7 +779,6 @@ let build_other ext env =  match env with
           | ({pat_desc = Tpat_check (p,_)}, _) -> f, p :: a
           | _ -> assert false)
         ([],[]) env
->>>>>>> origin/varunion
     in
     let row = Ctype.row_normal p.pat_env row in
     let make_other_pat tag const =
@@ -1588,95 +1579,6 @@ let do_check_partial loc casel pss = match pss with
 (*****************)
 (* Fragile check *)
 (*****************)
-<<<<<<< HEAD
-
-(* Collect all data types in a pattern *)
-
-let rec add_path path = function
-  | [] -> [path]
-  | x::rem as paths ->
-      if Path.same path x then paths
-      else x::add_path path rem
-
-let extendable_path path =
-  not
-    (Path.same path Predef.path_bool ||
-    Path.same path Predef.path_list ||
-    Path.same path Predef.path_option)
-
-let rec collect_paths_from_pat r p = match p.pat_desc with
-| Tpat_construct({cstr_tag=(Cstr_constant _|Cstr_block _)},ps) ->
-    let path =  get_type_path p.pat_type p.pat_env in
-    List.fold_left
-      collect_paths_from_pat
-      (if extendable_path path then add_path path r else r)
-      ps
-| Tpat_any|Tpat_var _|Tpat_constant _| Tpat_variant (_,None,_) -> r
-| Tpat_tuple ps | Tpat_array ps
-| Tpat_construct ({cstr_tag=Cstr_exception _}, ps)->
-    List.fold_left collect_paths_from_pat r ps
-| Tpat_record lps ->
-    List.fold_left
-      (fun r (_,p) -> collect_paths_from_pat r p)
-      r lps
-| Tpat_variant (_, Some p, _) | Tpat_alias (p,_) -> collect_paths_from_pat r p
-| Tpat_or (p1,p2,_) ->
-    collect_paths_from_pat (collect_paths_from_pat r p1) p2
-      
-
-(*
-  Actual fragile check
-   1. Collect data types in the patterns of the match.
-   2. One exhautivity check per datatype, considering that
-      the type is extended.
-*)
-
-let do_check_fragile loc casel pss =
-  let exts =
-    List.fold_left
-      (fun r (p,_) -> collect_paths_from_pat r p)
-      [] casel in
-  match exts with
-  | [] -> ()
-  | _ -> match pss with
-    | [] -> ()
-    | ps::_ ->
-        List.iter
-          (fun ext ->
-            match exhaust (Some ext) pss (List.length ps) with
-            | Rnone ->
-                Location.prerr_warning
-                  loc
-                  (Warnings.Fragile_match (Path.name ext))
-            | Rsome _ -> ())
-          exts
-
-
-(********************************)
-(* Exported exhustiveness check *)
-(********************************)
-
-(*
-   Fragile check is performed when required and
-   on exhaustive matches only.
-*)
-
-let check_partial loc casel =
-  if Warnings.is_active (Warnings.Partial_match "") then begin
-    let pss = initial_matrix casel in
-    let pss = get_mins le_pats pss in
-    let total = do_check_partial loc casel pss in
-    if
-      total = Total && Warnings.is_active (Warnings.Fragile_match "")
-    then begin
-      do_check_fragile loc casel pss
-    end ;
-    total
-  end else
-    Partial
-
-
-=======
 
 (* Collect all data types in a pattern *)
 
@@ -1765,7 +1667,6 @@ let check_partial loc casel =
     Partial
 
 
->>>>>>> origin/varunion
 (********************************)
 (* Exported unused clause check *)
 (********************************)
@@ -1791,12 +1692,8 @@ let check_unused tdefs casel =
                         p.pat_loc Warnings.Unused_pat)
                     ps
               | Used -> ()
-<<<<<<< HEAD
-            with e -> assert false
-=======
             with Assert_failure _ as e -> raise e
             | _ -> assert false
->>>>>>> origin/varunion
             end ;
                    
           if has_guard act then
