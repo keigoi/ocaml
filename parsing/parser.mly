@@ -1178,8 +1178,8 @@ type_kind:
       { (Ptype_variant(List.rev $6, $4), Some $2) }
   | EQUAL core_type EQUAL private_flag LBRACE label_declarations opt_semi RBRACE
       { (Ptype_record(List.rev $6, $4), Some $2) }
-  | EQUAL PRIVATE core_type
-      { (Ptype_private, Some $3) }
+  | EQUAL PRIVATE core_type row_compat
+      { (Ptype_private $4, Some $3) }
 ;
 type_parameters:
     /*empty*/                                   { [] }
@@ -1224,12 +1224,13 @@ with_constraints:
   | with_constraints AND with_constraint        { $3 :: $1 }
 ;
 with_constraint:
-    TYPE type_parameters label_longident with_type_binder core_type constraints
+    TYPE type_parameters label_longident with_type_binder constraints
       { let params, variance = List.split $2 in
+        let kind, mfest = $4 in
         ($3, Pwith_type {ptype_params = params;
-                         ptype_cstrs = List.rev $6;
-                         ptype_kind = $4;
-                         ptype_manifest = Some $5;
+                         ptype_cstrs = List.rev $5;
+                         ptype_kind = kind;
+                         ptype_manifest = Some mfest;
                          ptype_variance = variance;
                          ptype_loc = symbol_rloc()}) }
     /* used label_longident instead of type_longident to disallow
@@ -1238,8 +1239,8 @@ with_constraint:
       { ($2, Pwith_module $4) }
 ;
 with_type_binder:
-    EQUAL          { Ptype_abstract }
-  | EQUAL PRIVATE  { Ptype_private }
+    EQUAL core_type                            { Ptype_abstract, $2 }
+  | EQUAL PRIVATE core_type row_compat         { Ptype_private $4, $3 }
 ;
 
 /* Polymorphic types */
@@ -1291,12 +1292,8 @@ simple_core_type2:
       { mktyp(Ptyp_var $2) }
   | UNDERSCORE
       { mktyp(Ptyp_any) }
-  | type_longident
-      { mktyp(Ptyp_constr($1, [])) }
-  | simple_core_type2 type_longident
-      { mktyp(Ptyp_constr($2, [$1])) }
-  | LPAREN core_type_comma_list RPAREN type_longident
-      { mktyp(Ptyp_constr($4, List.rev $2)) }
+  | type_constructor
+      { $1 }
   | LESS meth_list GREATER
       { mktyp(Ptyp_object $2) }
   | LESS GREATER
@@ -1307,6 +1304,8 @@ simple_core_type2:
       { mktyp(Ptyp_class($3, [$1], $4)) }
   | LPAREN core_type_comma_list RPAREN SHARP class_longident opt_present
       { mktyp(Ptyp_class($5, List.rev $2, $6)) }
+  | LBRACKET RBRACKET
+      { mktyp(Ptyp_variant([], true, None)) }
   | LBRACKET tag_field RBRACKET
       { mktyp(Ptyp_variant([$2], true, None)) }
 /* PR#3835: this is not LR(1), would need lookahead=2
@@ -1325,6 +1324,14 @@ simple_core_type2:
       { mktyp(Ptyp_variant(List.rev $3, true, Some [])) }
   | LBRACKETLESS opt_bar row_field_list GREATER name_tag_list RBRACKET
       { mktyp(Ptyp_variant(List.rev $3, true, Some (List.rev $5))) }
+;
+type_constructor:
+  | type_longident
+      { mktyp(Ptyp_constr($1, [])) }
+  | simple_core_type2 type_longident
+      { mktyp(Ptyp_constr($2, [$1])) }
+  | LPAREN core_type_comma_list RPAREN type_longident
+      { mktyp(Ptyp_constr($4, List.rev $2)) }
 ;
 row_field_list:
     row_field                                   { [$1] }
@@ -1355,6 +1362,19 @@ opt_present:
 name_tag_list:
     name_tag                                    { [$1] }
   | name_tag_list name_tag                      { $2 :: $1 }
+;
+row_compat:
+    TILDE LBRACKET row_compat_list opt_semi RBRACKET
+                                                { List.rev $3 }
+  | /* empty */                                 { [] }
+;
+row_compat_list:
+  | compat_field                                { [$1] }
+  | row_compat_list SEMI compat_field           { $3 :: $1 }
+;
+compat_field:
+  | name_tag                                    { Pcnofield $1 }
+  | type_constructor                            { Pctype $1 }
 ;
 simple_core_type_or_tuple:
     simple_core_type                            { $1 }

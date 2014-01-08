@@ -617,7 +617,7 @@ let rec extract_vars r p = match p.pat_desc with
     List.fold_left extract_vars r pats
 | Tpat_variant (_,Some p, _) -> extract_vars r p
 | Tpat_or (p,_,_) -> extract_vars r p
-| Tpat_constant _|Tpat_any|Tpat_variant (_,None,_) -> r
+| Tpat_constant _|Tpat_any|Tpat_variant (_,None,_) | Tpat_check _ -> r
 
 exception Cannot_flatten
 
@@ -1998,7 +1998,8 @@ let combine_variant row arg partial ctx def (tag_lambda_list, total1, pats) =
     num_constr := max_int;
   let test_int_or_block arg if_int if_block =
     Lifthenelse(Lprim (Pisint, [arg]), if_int, if_block) in
-  let sig_complete =  List.length tag_lambda_list = !num_constr
+  let sig_complete =
+    List.length tag_lambda_list = !num_constr && row.row_abs = []
   and one_action = same_actions tag_lambda_list in
   let fail, to_add, local_jumps =
     if

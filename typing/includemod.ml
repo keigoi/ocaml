@@ -209,8 +209,7 @@ and signatures env subst sig1 sig2 =
         let (id2, name2) = item_ident_name item2 in
         let name2, report =
           match name2 with
-            Field_type s when let l = String.length s in
-            l >= 4 && String.sub s (l-4) 4 = "#row" ->
+            Field_type s when Btype.is_row_name s ->
               (* Do not report in case of failure,
                  as the main type will generate an error *)
               Field_type (String.sub s 0 (String.length s - 4)), false
@@ -231,10 +230,13 @@ and signatures env subst sig1 sig2 =
           in
           pair_components new_subst
             ((item1, item2, pos1) :: paired) unpaired rem
-        with Not_found ->
-          let unpaired =
-            if report then Missing_field id2 :: unpaired else unpaired in
-          pair_components subst paired unpaired rem
+        with Not_found -> match name2 with
+          Field_value s when Btype.is_row_name s ->
+            pair_components subst ((item2,item2, -1) :: paired) unpaired rem
+        | _ ->
+            let unpaired =
+              if report then Missing_field id2 :: unpaired else unpaired in
+            pair_components subst paired unpaired rem
         end in
   (* Do the pairing and checking, and return the final coercion *)
   simplify_structure_coercion (pair_components subst [] [] sig2)
@@ -243,6 +245,33 @@ and signatures env subst sig1 sig2 =
 
 and signature_components env subst = function
     [] -> []
+  | (Tsig_value _, Tsig_value(id2, valdecl2), -1) :: rem ->
+      let (id1, decl) = try
+        let s = Btype.unrow_name (Ident.name id2) in
+        Env.lookup_type (Longident.Lident s) env
+      with Not_found -> assert false in
+      let row =
+        let ty0 = Btype.newgenty (Tconstr(id1, decl.type_params, ref Mnil)) in
+        let ty = Ctype.expand_head env ty0  in
+        match ty.desc with
+        | Tvariant row
+          when Btype.static_row {(Btype.row_repr row) with row_closed=true} ->
+            let row =
+              Ctype.row_normal env ~noapp:true
+                {row_fields=[]; row_abs=[ty0]; row_closed=true; row_bound=[];
+                 row_more=Btype.newgenvar(); row_fixed=false; row_name=None} in
+            if Btype.has_constr_row ty then
+              {row with row_fields = []; row_abs = [List.hd row.row_abs]}
+            else row
+        | _ -> raise (Error[Missing_field id2])
+      in
+      List.iter
+        (fun ty ->
+          match Btype.repr ty with
+            {desc=Tconstr(p,_,_)} when Path.flat p -> ()
+          | _ -> raise (Error[Missing_field id2]))
+        row.row_abs;
+      (-1, Tcoerce_matcher(row, env)) :: signature_components env subst rem
   | (Tsig_value(id1, valdecl1), Tsig_value(id2, valdecl2), pos) :: rem ->
       let cc = value_descriptions env subst id1 valdecl1 valdecl2 in
       begin match valdecl2.val_kind with

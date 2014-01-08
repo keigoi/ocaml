@@ -33,13 +33,6 @@ let newty2 level desc  =
   incr new_id; { desc = desc; level = level; id = !new_id }
 let newgenty desc      = newty2 generic_level desc
 let newgenvar ()       = newgenty Tvar
-(*
-let newmarkedvar level =
-  incr new_id; { desc = Tvar; level = pivot_level - level; id = !new_id }
-let newmarkedgenvar () =
-  incr new_id;
-  { desc = Tvar; level = pivot_level - generic_level; id = !new_id }
-*)
 
 (**** Representative of a type ****)
 
@@ -82,16 +75,18 @@ let rec rev_concat l ll =
     [] -> l
   | l'::ll -> rev_concat (l'@l) ll
 
-let rec row_repr_aux ll row =
+let rec row_repr_aux fields abs row =
   match (repr row.row_more).desc with
   | Tvariant row' ->
-      let f = row.row_fields in
-      row_repr_aux (if f = [] then ll else f::ll) row'
+      let f = row.row_fields and a = row.row_abs in
+      row_repr_aux (if f = [] then fields else f::fields)
+        (if a = [] then abs else a::abs) row'
   | _ ->
-      if ll = [] then row else
-      {row with row_fields = rev_concat row.row_fields ll}
+      if fields = [] && abs = [] then row else
+      {row with row_fields = rev_concat row.row_fields fields;
+       row_abs = rev_concat row.row_abs abs}
 
-let row_repr row = row_repr_aux [] row
+let row_repr row = row_repr_aux [] [] row
 
 let rec row_field tag row =
   let rec find = function
@@ -160,6 +155,21 @@ let is_row_name s =
   let l = String.length s in
   if l < 4 then false else String.sub s (l-4) 4 = "#row"
 
+let unrow_name s =
+  assert (is_row_name s);
+  String.sub s 0 (String.length s - 4)
+
+let cleanup_row_abs row =
+  let row = row_repr row in
+  let abs =
+    List.map
+      (fun t -> match repr t with
+        {desc = Tconstr(Path.Pdot(p,n,pos), tl, _)} when is_row_name n ->
+          newgenty (Tconstr(Path.Pdot(p, unrow_name n, pos), tl, ref Mnil))
+      | t -> t)
+      row.row_abs in
+  { row with row_abs = abs }
+
 
                   (**********************************)
                   (*  Utilities for type traversal  *)
@@ -173,6 +183,7 @@ let rec iter_row f row =
       | Reither(_, tl, _, _) -> List.iter f tl
       | _ -> ())
     row.row_fields;
+  List.iter f row.row_abs;
   match (repr row.row_more).desc with
     Tvariant row -> iter_row f row
   | Tvar | Tunivar | Tsubst _ | Tconstr _ ->
@@ -202,6 +213,10 @@ let rec iter_abbrev f = function
   | Mcons(_, ty, ty', rem) -> f ty; f ty'; iter_abbrev f rem
   | Mlink rem              -> iter_abbrev f !rem
 
+let iter_compat f = function
+    Cfield l -> ()
+  | Ctype t  -> f t
+
 let copy_row f fixed row keep more =
   let bound = ref [] in
   let fields = List.map
@@ -218,11 +233,12 @@ let copy_row f fixed row keep more =
               @ !bound;
             Reither(c, tl, m, e)
         | _ -> fi)
-      row.row_fields in
-  let name =
+      row.row_fields
+  and abs = List.map f row.row_abs
+  and name =
     match row.row_name with None -> None
     | Some (path, tl) -> Some (path, List.map f tl) in
-  { row_fields = fields; row_more = more;
+  { row_fields = fields; row_more = more; row_abs = abs;
     row_bound = !bound; row_fixed = row.row_fixed && fixed;
     row_closed = row.row_closed; row_name = name; }
 
@@ -263,6 +279,9 @@ let rec copy_type_desc f = function
       let tyl = List.map (fun x -> norm_univar (f x)) tyl in
       Tpoly (f ty, tyl)
 
+let copy_compat f = function
+    Ctype t            -> Ctype (f t)
+  | c                  -> c
 
 (* Utilities for copying *)
 
@@ -322,6 +341,8 @@ let unmark_type_decl decl =
       List.iter (fun (c, tl) -> List.iter unmark_type tl) cstrs
   | Type_record(lbls, rep, priv) ->
       List.iter (fun (c, mut, t) -> unmark_type t) lbls
+  | Type_private c ->
+      List.iter (iter_compat unmark_type) c
   end;
   begin match decl.type_manifest with
     None    -> ()

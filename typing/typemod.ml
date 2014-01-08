@@ -62,6 +62,23 @@ let type_module_path env loc lid =
   with Not_found ->
     raise(Error(loc, Unbound_module lid))
 
+(* Declare a matcher function *)
+
+let matcher_desc () =
+  let m = Btype.newgenty in
+  let row = {row_fields=[]; row_more=m Tvar; row_abs=[]; row_bound=[];
+             row_closed=false; row_fixed=false; row_name=None} in
+  let ty = m(Tarrow("", m(Tvariant row), Predef.type_bool, Cok)) in
+  {val_type=ty; val_kind=Val_reg}
+
+let needs_matcher decl =
+  match decl.type_manifest with None -> false
+  | Some ty ->
+      match Btype.repr ty with {desc=Tvariant row} ->
+        let row = Btype.row_repr row in
+        row.row_closed = false
+      | _ -> false
+
 (* Record a module type *)
 let rm node =
   Stypes.record (Stypes.Ti_mod node);
@@ -87,8 +104,9 @@ let merge_constraint initial_env loc sg lid constr =
       ([], _, _) ->
         raise(Error(loc, With_no_component lid))
     | (Tsig_type(id, decl, rs) :: rem, [s],
-       Pwith_type ({ptype_kind = Ptype_private} as sdecl))
+       Pwith_type ({ptype_kind = Ptype_private scl} as sdecl))
       when Ident.name id = s ->
+<<<<<<< HEAD
         let decl_row =
           { type_params =
               List.map (fun _ -> Btype.newgenvar()) sdecl.ptype_params;
@@ -104,8 +122,27 @@ let merge_constraint initial_env loc sg lid constr =
                         initial_env id (Some(Pident id_row)) sdecl in
         check_type_decl env id row_id newdecl decl rs rem;
         let decl_row = {decl_row with type_params = newdecl.type_params} in
+=======
+        let s' = s ^ "#row" in
+	let decl_row =
+          Typedecl.transl_with_constraint env id None
+            {sdecl with ptype_manifest = None}
+	and id_row = Ident.create s' in
+	let initial_env = Env.add_type id_row decl_row initial_env in
+        let newdecl =
+          Typedecl.transl_with_constraint initial_env id
+            (Some(Pident id_row)) sdecl in
+        check_type_decl env id row_id newdecl decl rs rem;
+>>>>>>> origin/varunion
         let rs' = if rs = Trec_first then Trec_not else rs in
-        Tsig_type(id_row, decl_row, rs') :: Tsig_type(id, newdecl, rs) :: rem
+        Tsig_type(id_row, decl_row, rs') :: Tsig_type(id, newdecl, rs) ::
+        let rec insert_matcher = function
+            (Tsig_type(_,_,Trec_next) as item) :: rem ->
+              item :: insert_matcher rem
+          | rem ->
+              Tsig_value(Ident.create s', matcher_desc()) :: rem
+        in
+        if needs_matcher newdecl then insert_matcher rem else rem
     | (Tsig_type(id, decl, rs) :: rem, [s], Pwith_type sdecl)
       when Ident.name id = s ->
         let newdecl =
@@ -114,7 +151,11 @@ let merge_constraint initial_env loc sg lid constr =
         Tsig_type(id, newdecl, rs) :: rem
     | (Tsig_type(id, decl, rs) :: rem, [s], Pwith_type sdecl)
       when Ident.name id = s ^ "#row" ->
-        merge env rem namelist (Some id)
+        let s' = s ^ "#row" in
+        let rem = List.filter
+            (function Tsig_value(id,_) -> Ident.name id <> s' | _ -> true)
+            rem
+        in merge env rem namelist (Some id)
     | (Tsig_module(id, mty, rs) :: rem, [s], Pwith_module lid)
       when Ident.name id = s ->
         let (path, mty') = type_module_path initial_env loc lid in
@@ -314,8 +355,18 @@ and transl_signature env sg =
               (fun (name, decl) -> check "type" item.psig_loc type_names name)
               sdecls;
             let (decls, newenv) = Typedecl.transl_type_decl env sdecls in
+            let sig_check =
+              List.fold_right
+                (fun (id,decl) sigs ->
+                  if needs_matcher decl then
+                    let s = Ident.name id ^ "#row" in
+                    Tsig_value(Ident.create s, matcher_desc()) :: sigs
+                  else sigs)
+                decls []
+            in
             let rem = transl_sig newenv srem in
-            map_rec' (fun rs (id, info) -> Tsig_type(id, info, rs)) decls rem
+            map_rec' (fun rs (id, info) -> Tsig_type(id, info, rs)) decls
+              (sig_check @ rem)
         | Psig_exception(name, sarg) ->
             let arg = Typedecl.transl_exception env sarg in
             let (id, newenv) = Env.enter_exception name arg env in
@@ -595,9 +646,26 @@ and type_structure anchor env sstr =
         let (decls, newenv) = Typedecl.transl_type_decl env sdecls in
         let newenv' =
           enrich_type_decls anchor decls env newenv in
-        let (str_rem, sig_rem, final_env) = type_struct newenv' srem in
-        (Tstr_type decls :: str_rem,
-         map_rec' (fun rs (id, info) -> Tsig_type(id, info, rs)) decls sig_rem,
+        let (str_check, sig_check, newenv'') =
+          List.fold_right
+            (fun (id,decl) (strs, sigs, env as accu) ->
+              if needs_matcher decl then
+                let vd = matcher_desc () in
+                let id = Ident.create(Ident.name id ^ "#row") in
+                let p = {pat_desc=Tpat_var id; pat_env=env; pat_loc=loc;
+                         pat_type=vd.val_type} in
+                let e = {exp_desc=Texp_function([],Partial); exp_env=env;
+                         exp_loc=loc; exp_type=vd.val_type} in
+                Tstr_value(Nonrecursive, [p,e]) :: strs,
+                Tsig_value(id, vd) :: sigs,
+                Env.add_value id vd env
+              else accu)
+            decls ([], [], newenv')
+        in
+        let (str_rem, sig_rem, final_env) = type_struct newenv'' srem in
+        (Tstr_type decls :: str_check @ str_rem,
+         map_rec' (fun rs (id, info) -> Tsig_type(id, info, rs)) decls
+           (sig_check @ sig_rem),
          final_env)
     | {pstr_desc = Pstr_exception(name, sarg)} :: srem ->
         let arg = Typedecl.transl_exception env sarg in

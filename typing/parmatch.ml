@@ -97,6 +97,9 @@ let rec compat p q =
   | Tpat_array ps, Tpat_array qs ->
       List.length ps = List.length qs &&
       compats ps qs
+  | Tpat_check(p1,_), Tpat_check(p2,_) -> Path.same p1 p2
+  | Tpat_check _, _ -> true
+  | _, Tpat_check _ -> true
   | _,_  ->
       assert false
         
@@ -208,6 +211,9 @@ let rec pretty_val ppf v = match v.pat_desc with
       fprintf ppf "@[(%a@ as %a)@]" pretty_val v Ident.print x
   | Tpat_or (v,w,_)    ->
       fprintf ppf "@[(%a|@,%a)@]" pretty_or v pretty_or w
+  | Tpat_check (p, _) ->
+      fprintf ppf "#%a" Printtyp.longident
+        (Path.to_lid p ~rename:Btype.unrow_name)
 
 and pretty_car ppf v = match v.pat_desc with
 | Tpat_construct ({cstr_tag=tag}, [_ ; _])
@@ -265,6 +271,8 @@ let simple_match p1 p2 =
       c1.cstr_tag = c2.cstr_tag
   | Tpat_variant(l1, _, _), Tpat_variant(l2, _, _) ->
       l1 = l2
+  | Tpat_check(p1,_), Tpat_check(p2,_) ->
+      Path.same p1 p2
   | Tpat_constant(Const_float s1), Tpat_constant(Const_float s2) ->
       float_of_string s1 = float_of_string s2
   | Tpat_constant(c1), Tpat_constant(c2) -> c1 = c2
@@ -362,6 +370,7 @@ let rec normalize_pat q = match q.pat_desc with
       make_pat (Tpat_record (List.map (fun (lbl,_) -> lbl,omega) largs))
         q.pat_type q.pat_env
   | Tpat_or _ -> fatal_error "Parmatch.normalize_pat"
+  | Tpat_check _ -> q
 
 
 (*
@@ -581,7 +590,8 @@ let close_variant env row =
     (* this unification cannot fail *)
     Ctype.unify env row.row_more
       (Btype.newgenty
-         (Tvariant {row with row_fields = []; row_more = Btype.newgenvar();
+         (Tvariant {row with row_fields = []; row_abs = [];
+                    row_more = Btype.newgenvar();
                     row_closed = true; row_name = nm}))
   end
 
@@ -595,14 +605,36 @@ let full_match closing env =  match env with
     false
 | ({pat_desc = Tpat_construct(c,_)},_) :: _ ->
     List.length env = c.cstr_consts + c.cstr_nonconsts
-| ({pat_desc = Tpat_variant(_,_,row)},_) :: _ ->
-    let fields =
-      List.map
-        (function ({pat_desc = Tpat_variant (tag, _, _)}, _) -> tag
+| ({pat_desc = Tpat_variant(_,_,row) | Tpat_check(_,row)} as p,_) :: _ ->
+    let fields, abs =
+      List.fold_left
+        (fun (f,a) -> function
+            ({pat_desc = Tpat_variant (tag, _, _)}, _) -> tag :: f, a
+          | ({pat_desc = Tpat_check (p,_)}, _) -> f, p :: a
           | _ -> assert false)
-        env
+        ([],[]) env
     in
-    let row = Btype.row_repr row in
+    let abs =
+      List.map
+        (fun path -> try
+          let decl = Env.find_type path p.pat_env in
+          let ty =
+            Ctype.newconstr path
+              (List.map (fun _ -> Ctype.newvar()) decl.type_params) in
+          match Ctype.expand_head p.pat_env ty with
+            {desc=Tconstr(path,_,_)} -> path
+          | _ -> assert false
+        with Not_found -> path)
+        abs
+    in
+    let row = Ctype.row_normal p.pat_env row in
+    let abs_ok =
+      List.for_all
+        (fun ty -> match Btype.repr ty with
+          {desc=Tconstr(p,_,_)} -> List.exists (Path.same p) abs
+        | _ -> assert false)
+        row.row_abs
+    in
     if closing && not row.row_fixed then
       (* closing=true, we are considering the variant as closed *)
       List.for_all
@@ -612,9 +644,10 @@ let full_match closing env =  match env with
           | Reither (_, _, true, _)
               (* m=true, do not discard matched tags, rather warn *)
           | Rpresent _ -> List.mem tag fields)
-        row.row_fields
+        row.row_fields &&
+      abs_ok
     else
-      row.row_closed &&
+      abs_ok && row.row_closed &&
       List.for_all
         (fun (tag,f) ->
           Btype.row_field_repr f = Rabsent || List.mem tag fields)
@@ -738,18 +771,29 @@ let build_other ext env =  match env with
         let all_tags =  List.map (fun (p,_) -> get_tag p) env in
         pat_of_constrs p (complete_constrs p all_tags)
     end
+<<<<<<< HEAD
 | ({pat_desc = Tpat_variant(_,_,row)} as p,_) :: _ ->
     let tags =
       List.map
         (function ({pat_desc = Tpat_variant (tag, _, _)}, _) -> tag
                 | _ -> assert false)
         env
+=======
+| ({pat_desc = Tpat_variant(_,_,row) | Tpat_check(_,row)} as p,_) :: _ ->
+    let tags, abs =
+      List.fold_left
+        (fun (f,a) -> function
+            ({pat_desc = Tpat_variant (tag, _, _)}, _) -> tag :: f, a
+          | ({pat_desc = Tpat_check (p,_)}, _) -> f, p :: a
+          | _ -> assert false)
+        ([],[]) env
+>>>>>>> origin/varunion
     in
-    let row = Btype.row_repr row in
+    let row = Ctype.row_normal p.pat_env row in
     let make_other_pat tag const =
       let arg = if const then None else Some omega in
       make_pat (Tpat_variant(tag, arg, row)) p.pat_type p.pat_env in
-    begin match
+    let field_pats =
       List.fold_left
         (fun others (tag,f) ->
           if List.mem tag tags then others else
@@ -759,7 +803,17 @@ let build_other ext env =  match env with
           | Reither (c, _, _, _) -> make_other_pat tag c :: others
           | Rpresent arg -> make_other_pat tag (arg = None) :: others)
         [] row.row_fields
-    with
+    and abs_pats =
+      List.fold_left
+        (fun others ty ->
+          match Btype.repr ty with
+            {desc=Tconstr(p1,_,_)} ->
+              if List.exists (Path.same p1) abs then others else
+              make_pat (Tpat_check(p1, row)) p.pat_type p.pat_env :: others
+          | _ -> assert false)
+        [] row.row_abs
+    in
+    begin match field_pats @ abs_pats with
       [] ->
         make_other_pat "AnyExtraTag" true
     | pat::other_pats ->
@@ -857,7 +911,8 @@ let build_other ext env =  match env with
 
 let rec has_instance p = match p.pat_desc with
   | Tpat_variant (l,_,r) when is_absent l r -> false
-  | Tpat_any | Tpat_var _ | Tpat_constant _ | Tpat_variant (_,None,_) -> true
+  | Tpat_any | Tpat_var _ | Tpat_constant _
+  | Tpat_variant (_,None,_) | Tpat_check _ -> true
   | Tpat_alias (p,_) | Tpat_variant (_,Some p,_) -> has_instance p
   | Tpat_or (p1,p2,_) -> has_instance p1 || has_instance p2
   | Tpat_construct (_,ps) | Tpat_tuple ps | Tpat_array ps -> has_instances ps
@@ -999,7 +1054,8 @@ let rec pressure_variants tdefs = function
               else try_non_omega (filter_all q0 (mark_partial pss))
             in
             begin match constrs, tdefs with
-              ({pat_desc=Tpat_variant(_,_,row)},_):: _, Some env ->
+              ({pat_desc=Tpat_variant(_,_,row) | Tpat_check(_,row)},_):: _,
+              Some env ->
                 let row = Btype.row_repr row in
                 if row.row_fixed
                 || pressure_variants None (filter_extra pss) then ()
@@ -1532,6 +1588,7 @@ let do_check_partial loc casel pss = match pss with
 (*****************)
 (* Fragile check *)
 (*****************)
+<<<<<<< HEAD
 
 (* Collect all data types in a pattern *)
 
@@ -1619,6 +1676,96 @@ let check_partial loc casel =
     Partial
 
 
+=======
+
+(* Collect all data types in a pattern *)
+
+let rec add_path path = function
+  | [] -> [path]
+  | x::rem as paths ->
+      if Path.same path x then paths
+      else x::add_path path rem
+
+let extendable_path path =
+  not
+    (Path.same path Predef.path_bool ||
+    Path.same path Predef.path_list ||
+    Path.same path Predef.path_option)
+
+let rec collect_paths_from_pat r p = match p.pat_desc with
+| Tpat_construct({cstr_tag=(Cstr_constant _|Cstr_block _)},ps) ->
+    let path =  get_type_path p.pat_type p.pat_env in
+    List.fold_left
+      collect_paths_from_pat
+      (if extendable_path path then add_path path r else r)
+      ps
+| Tpat_any | Tpat_var _ | Tpat_constant _ | Tpat_variant (_,None,_)
+| Tpat_check _ -> r
+| Tpat_tuple ps | Tpat_array ps
+| Tpat_construct ({cstr_tag=Cstr_exception _}, ps)->
+    List.fold_left collect_paths_from_pat r ps
+| Tpat_record lps ->
+    List.fold_left
+      (fun r (_,p) -> collect_paths_from_pat r p)
+      r lps
+| Tpat_variant (_, Some p, _) | Tpat_alias (p,_) -> collect_paths_from_pat r p
+| Tpat_or (p1,p2,_) ->
+    collect_paths_from_pat (collect_paths_from_pat r p1) p2
+      
+
+(*
+  Actual fragile check
+   1. Collect data types in the patterns of the match.
+   2. One exhautivity check per datatype, considering that
+      the type is extended.
+*)
+
+let do_check_fragile loc casel pss =
+  let exts =
+    List.fold_left
+      (fun r (p,_) -> collect_paths_from_pat r p)
+      [] casel in
+  match exts with
+  | [] -> ()
+  | _ -> match pss with
+    | [] -> ()
+    | ps::_ ->
+        List.iter
+          (fun ext ->
+            match exhaust (Some ext) pss (List.length ps) with
+            | Rnone ->
+                Location.prerr_warning
+                  loc
+                  (Warnings.Fragile_match (Path.name ext))
+            | Rsome _ -> ())
+          exts
+
+
+(********************************)
+(* Exported exhustiveness check *)
+(********************************)
+
+(*
+   Fragile check is performed when required and
+   on exhaustive matches only.
+*)
+
+let check_partial loc casel =
+  if Warnings.is_active (Warnings.Partial_match "") then begin
+    let pss = initial_matrix casel in
+    let pss = get_mins le_pats pss in
+    let total = do_check_partial loc casel pss in
+    if
+      total = Total && Warnings.is_active (Warnings.Fragile_match "")
+    then begin
+      do_check_fragile loc casel pss
+    end ;
+    total
+  end else
+    Partial
+
+
+>>>>>>> origin/varunion
 (********************************)
 (* Exported unused clause check *)
 (********************************)
@@ -1644,7 +1791,12 @@ let check_unused tdefs casel =
                         p.pat_loc Warnings.Unused_pat)
                     ps
               | Used -> ()
+<<<<<<< HEAD
             with e -> assert false
+=======
+            with Assert_failure _ as e -> raise e
+            | _ -> assert false
+>>>>>>> origin/varunion
             end ;
                    
           if has_guard act then

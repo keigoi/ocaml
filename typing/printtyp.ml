@@ -39,13 +39,16 @@ let ident ppf id = fprintf ppf "%s" (Ident.name id)
 
 let ident_pervasive = Ident.create_persistent "Pervasives"
 
+let norm_name s = s
+  (* if Btype.is_row_name s then Btype.unrow_name s else s *)
+
 let rec tree_of_path = function
   | Pident id ->
-      Oide_ident (Ident.name id)
+      Oide_ident (norm_name (Ident.name id))
   | Pdot(Pident id, s, pos) when Ident.same id ident_pervasive ->
       Oide_ident s
   | Pdot(p, s, pos) ->
-      Oide_dot (tree_of_path p, s)
+      Oide_dot (tree_of_path p, norm_name s)
   | Papply(p1, p2) ->
       Oide_apply (tree_of_path p1, tree_of_path p2)
 
@@ -361,7 +364,8 @@ let rec tree_of_typexp sch ty =
             let fields = List.map (tree_of_row_field sch) fields in
             let tags =
               if all_present then None else Some (List.map fst present) in
-            Otyp_variant (non_gen, Ovar_fields fields, row.row_closed, tags)
+            let desc = Ovar_fields (fields, tree_of_typlist sch row.row_abs) in
+            Otyp_variant (non_gen, desc, row.row_closed, tags)
         end
     | Tobject (fi, nm) ->
         tree_of_typobject sch fi nm
@@ -489,6 +493,10 @@ let string_of_mutable = function
   | Immutable -> ""
   | Mutable -> "mutable "
 
+let tree_of_compat = function
+    Cfield l -> Ocp_field l
+  | Ctype t -> Ocp_type (tree_of_typexp false t)
+
 let rec tree_of_type_decl id decl =
 
   reset();
@@ -517,12 +525,14 @@ let rec tree_of_type_decl id decl =
         Some ty
   in
   begin match decl.type_kind with
-  | Type_abstract -> ()
+  | Type_abstract | Type_private [] -> ()
   | Type_variant ([], _) -> ()
   | Type_variant (cstrs, priv) ->
       List.iter (fun (_, args) -> List.iter mark_loops args) cstrs
   | Type_record(l, rep, priv) ->
       List.iter (fun (_, _, ty) -> mark_loops ty) l
+  | Type_private (_ :: l) ->
+      List.iter (iter_compat mark_loops) l
   end;
 
   let type_param =
@@ -540,6 +550,8 @@ let rec tree_of_type_decl id decl =
           end
       | Type_variant(_,p) | Type_record(_,_,p) ->
           p = Private
+      | Type_private _ ->
+          true
     in
     let vari =
       List.map2
@@ -558,21 +570,35 @@ let rec tree_of_type_decl id decl =
   in
   let (name, args) = type_defined decl in
   let constraints = tree_of_constraints params in
-  let ty, priv =
+  let ty, priv, compat =
     match decl.type_kind with
     | Type_abstract ->
         begin match ty_manifest with
-        | None -> (Otyp_abstract, Public)
+        | None -> (Otyp_abstract, Public, [])
         | Some ty ->
             tree_of_typexp false ty,
-            (if has_constr_row ty then Private else Public)
+            (if has_constr_row ty then Private else Public),
+            []
         end
     | Type_variant(cstrs, priv) ->
-        tree_of_manifest (Otyp_sum (List.map tree_of_constructor cstrs)), priv
+        tree_of_manifest (Otyp_sum (List.map tree_of_constructor cstrs)),
+        priv, []
     | Type_record(lbls, rep, priv) ->
-        tree_of_manifest (Otyp_record (List.map tree_of_label lbls)), priv
+        tree_of_manifest (Otyp_record (List.map tree_of_label lbls)),
+        priv, []
+    | Type_private l ->
+        let l = if l = [] then l else List.tl l in
+        let tty =
+          match ty_manifest with
+            None -> Otyp_abstract
+          | Some ty -> tree_of_typexp false ty
+        in tty, Private, List.map tree_of_compat l
   in
-  (name, args, ty, priv, constraints)
+  let priv =
+    match ty with
+      Otyp_constr _ | Otyp_alias(Otyp_constr _,_) -> Public
+    | _ -> priv in
+  (name, args, ty, priv, compat, constraints)
 
 and tree_of_constructor (name, args) =
   (name, tree_of_typlist false args)
@@ -791,9 +817,13 @@ let rec tree_of_modtype = function
 
 and tree_of_signature = function
   | [] -> []
+  | Tsig_value(id, _) :: rem when Btype.is_row_name (Ident.name id) ->
+      tree_of_signature rem
   | Tsig_value(id, decl) :: rem ->
       tree_of_value_description id decl :: tree_of_signature rem
-  | Tsig_type(id, _, _) :: rem when is_row_name (Ident.name id) ->
+  | Tsig_type(id, {type_kind=Type_private _}, rs) ::
+    Tsig_type(id', decl', _) :: rem ->
+      Osig_type(tree_of_type_decl id' decl', tree_of_rec rs) ::
       tree_of_signature rem
   | Tsig_type(id, decl, rs) :: rem ->
       Osig_type(tree_of_type_decl id decl, tree_of_rec rs) ::

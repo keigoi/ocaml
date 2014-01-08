@@ -238,7 +238,8 @@ module Make(O : OBJ)(EVP : EVALPATH with type value = O.t) = struct
                 match decl with
                 | {type_kind = Type_abstract; type_manifest = None} ->
                     Oval_stuff "<abstr>"
-                | {type_kind = Type_abstract; type_manifest = Some body} ->
+                | {type_kind = Type_abstract | Type_private _;
+                   type_manifest = Some body} ->
                     tree_of_val depth obj
                       (try Ctype.apply env decl.type_params body ty_list with
                          Ctype.Cannot_apply -> abstract_type)
@@ -279,6 +280,7 @@ module Make(O : OBJ)(EVP : EVALPATH with type value = O.t) = struct
                         in
                         Oval_record (tree_of_fields 0 lbl_list)
                     end
+                | {type_kind = Type_private _} -> assert false
               with
                 Not_found ->                (* raised by Env.find_type *)
                   Oval_stuff "<abstr>"
@@ -286,7 +288,7 @@ module Make(O : OBJ)(EVP : EVALPATH with type value = O.t) = struct
                   Oval_stuff "<unknown constructor>"
               end
           | Tvariant row ->
-              let row = Btype.row_repr row in
+              let row = Ctype.row_normal env row in
               if O.is_block obj then
                 let tag : int = O.obj (O.field obj 0) in
                 let rec find = function

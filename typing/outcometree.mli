@@ -61,8 +61,13 @@ type out_type =
       bool * out_variant * bool * (string list) option
   | Otyp_poly of string list * out_type
 and out_variant =
-  | Ovar_fields of (string * bool * out_type list) list
+  | Ovar_fields of (string * bool * out_type list) list * out_type list
   | Ovar_name of out_ident * out_type list
+
+and out_compat =
+  | Ocp_field of string
+  | Ocp_type of out_type
+  | Ocp_notype of out_ident
 
 type out_class_type =
   | Octy_constr of out_ident * out_type list
@@ -92,7 +97,7 @@ and out_sig_item =
   | Osig_value of string * out_type * string list
 and out_type_decl =
   string * (string * (bool * bool)) list * out_type * Asttypes.private_flag *
-  (out_type * out_type) list
+  out_compat list * (out_type * out_type) list
 and out_rec_status =
   | Orec_not
   | Orec_first

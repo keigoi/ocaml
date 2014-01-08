@@ -185,24 +185,26 @@ and print_simple_out_type ppf =
       fprintf ppf "@[<2>< %a >@]" (print_fields rest) fields
   | Otyp_stuff s -> fprintf ppf "%s" s
   | Otyp_var (ng, s) -> fprintf ppf "'%s%s" (if ng then "_" else "") s
-  | Otyp_variant (non_gen, row_fields, closed, tags) ->
+  | Otyp_variant (non_gen, fields, closed, tags) ->
+      if fields = Ovar_fields([],[]) && closed then fprintf ppf "[]" else
       let print_present ppf =
         function
           None | Some [] -> ()
         | Some l -> fprintf ppf "@;<1 -2>> @[<hov>%a@]" pr_present l
-      in
-      let print_fields ppf =
+      and print_fields ppf =
         function
-          Ovar_fields fields ->
-            print_list print_row_field (fun ppf -> fprintf ppf "@;<1 -2>| ")
-              ppf fields
+          Ovar_fields (fields, abs) ->
+            let bar ppf = fprintf ppf "@;<1 -2>| " in
+            print_list print_row_field bar ppf fields;
+            if fields <> [] && abs <> [] then bar ppf;
+            print_list print_out_type bar ppf abs
         | Ovar_name (id, tyl) ->
             fprintf ppf "@[%a%a@]" print_typargs tyl print_ident id
       in
       fprintf ppf "%s[%s@[<hv>@[<hv>%a@]%a ]@]" (if non_gen then "_" else "")
         (if closed then if tags = None then " " else "< "
          else if tags = None then "> " else "? ")
-        print_fields row_fields
+        print_fields fields
         print_present tags
   | Otyp_alias _ | Otyp_poly _ | Otyp_arrow _ | Otyp_tuple _ as ty ->
       fprintf ppf "@[<1>(%a)@]" print_out_type ty
@@ -306,6 +308,11 @@ let out_module_type = ref (fun _ -> failwith "Oprint.out_module_type")
 let out_sig_item = ref (fun _ -> failwith "Oprint.out_sig_item")
 let out_signature = ref (fun _ -> failwith "Oprint.out_signature")
 
+let print_compat ppf = function
+    Ocp_field l -> fprintf ppf "`%s" l
+  | Ocp_type ty -> !out_type ppf ty
+  | Ocp_notype id -> print_ident ppf id
+
 let rec print_out_module_type ppf =
   function
     Omty_abstract -> ()
@@ -361,13 +368,17 @@ and print_out_sig_item ppf =
       fprintf ppf "@[<2>%s %a :@ %a%a@]" kwd value_ident name !out_type
         ty pr_prims prims
 
-and print_out_type_decl kwd ppf (name, args, ty, priv, constraints) =
+and print_out_type_decl kwd ppf (name, args, ty, priv, compat, constraints) =
   let print_constraints ppf params =
     List.iter
       (fun (ty1, ty2) ->
          fprintf ppf "@ @[<2>constraint %a =@ %a@]" !out_type ty1
            !out_type ty2)
       params
+  and print_compats ppf cp =
+    if cp = [] then () else
+    fprintf ppf " ~@ [@[%a]@]"
+      (print_list print_compat (fun ppf -> fprintf ppf ";@ ")) cp
   in
   let type_defined ppf =
     match args with
@@ -408,9 +419,10 @@ and print_out_type_decl kwd ppf (name, args, ty, priv, constraints) =
         print_private priv
         !out_type ty
   in
-  fprintf ppf "@[<2>@[<hv 2>%t%a@]%a@]"
+  fprintf ppf "@[<2>@[<hv 2>%t%a%a@]%a@]"
     print_name_args
     print_out_tkind ty
+    print_compats compat
     print_constraints constraints
 and print_out_constr ppf (name, tyl) =
   match tyl with

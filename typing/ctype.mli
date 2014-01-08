@@ -82,6 +82,9 @@ val merge_row_fields:
         (label * row_field * row_field) list
 val filter_row_fields:
         bool -> (label * row_field) list -> (label * row_field) list
+val merge_row_abs:
+        type_expr list -> type_expr list ->
+        type_expr list * type_expr list * (type_expr * type_expr) list
 
 val generalize: type_expr -> unit
         (* Generalize in-place the given type *)
@@ -131,9 +134,22 @@ val apply:
 
 val expand_head_once: Env.t -> type_expr -> type_expr
 val expand_head: Env.t -> type_expr -> type_expr
+val expand_head_noapp: Env.t -> type_expr -> type_expr
 val full_expand: Env.t -> type_expr -> type_expr
 
 val enforce_constraints: Env.t -> type_expr -> unit
+
+val row_normal: ?noapp:bool -> Env.t -> row_desc -> row_desc
+        (* Normalize a row by expanding components *)
+val check_compat: Env.t -> row_compat list -> type_expr -> bool
+        (* Check that an abstract type satisfies compatibilities.
+           Flag is true for forcing unification, false for checking equality.
+           Raise Unify if incompatible. *)
+val check_compat_define:
+        Env.t -> row_compat list -> type_expr -> type_expr -> bool
+        (* Check that a variant or abstract type satisfies compatibilities,
+           normalizing then first. *)
+val mkvariant: (label * row_field) list -> type_expr list -> bool -> type_expr
 
 val unify: Env.t -> type_expr -> type_expr -> unit
         (* Unify the two types given. Raise [Unify] if not possible. *)

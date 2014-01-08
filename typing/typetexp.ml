@@ -39,6 +39,7 @@ type error =
   | Variant_tags of string * string
   | Invalid_variable_name of string
   | Cannot_quantify of string * type_expr
+  | Incompatible_row of string * type_expr * type_expr
 
 exception Error of Location.t * error
 
@@ -91,6 +92,7 @@ let new_pre_univar () =
 let rec swap_list = function
     x :: y :: l -> y :: x :: swap_list l
   | l -> l
+
 
 type policy = Fixed | Extensible | Univars
 
@@ -217,6 +219,7 @@ let rec transl_type env policy styp =
               row.row_fields
           in
           let row = { row_closed = true; row_fields = fields;
+                      row_abs = row.row_abs;
                       row_bound = !bound; row_name = Some (path, args);
                       row_fixed = false; row_more = newvar () } in
           let static = Btype.static_row row in
@@ -265,9 +268,9 @@ let rec transl_type env policy styp =
       let bound = ref [] and name = ref None in
       let mkfield l f =
         newty (Tvariant {row_fields=[l,f]; row_more=newvar();
-                         row_bound=[]; row_closed=true;
+                         row_abs=[]; row_bound=[]; row_closed=true;
                          row_fixed=false; row_name=None}) in
-      let add_typed_field loc l f fields =
+      let add_typed_field loc l f fields abs =
         try
           let f' = List.assoc l fields in
           let ty = mkfield l f and ty' = mkfield l f' in
@@ -275,9 +278,14 @@ let rec transl_type env policy styp =
           try unify env ty ty'; fields
           with Unify trace -> raise(Error(loc, Constructor_mismatch (ty,ty')))
         with Not_found ->
+          List.iter
+            (fun ty ->
+              if check_compat env [Cfield l] ty then () else
+              raise (Error(loc, Incompatible_row("field", mkfield l f, ty))))
+            abs;
           (l, f) :: fields
       in
-      let rec add_field fields = function
+      let rec add_field (fields, abs, acl) = function
           Rtag (l, c, stl) ->
             name := None;
             let f = match present with
@@ -291,7 +299,7 @@ let rec transl_type env policy styp =
                 match stl with [] -> Rpresent None
                 | st :: _ -> Rpresent (Some(transl_type env policy st))
             in
-            add_typed_field styp.ptyp_loc l f fields
+            (add_typed_field styp.ptyp_loc l f fields abs, abs, acl)
         | Rinherit sty ->
             let ty = transl_type env policy sty in
             let nm =
@@ -299,35 +307,61 @@ let rec transl_type env policy styp =
                 {desc=Tconstr(p, tl, _)} -> Some(p, tl)
               | _                        -> None
             in
-            name := if fields = [] then nm else None;
-            let fl = match expand_head env ty, nm with
-              {desc=Tvariant row}, _ when Btype.static_row row ->
-                let row = Btype.row_repr row in
-                row.row_fields
+            name := if fields = [] && acl = [] then nm else None;
+            let fl, al, acl' = match expand_head env ty, nm with
+            | {desc=Tvariant row} as t, _
+              when Btype.static_row row || Btype.has_constr_row t &&
+              Btype.static_row {(Btype.row_repr row) with row_closed=true} ->
+                let row =
+                  {row_fields=[]; row_abs=[ty]; row_closed=true; row_bound=[];
+                   row_more=newvar(); row_fixed=false; row_name=None} in
+                let abs = (Ctype.row_normal env row ~noapp:true).row_abs in
+                List.iter
+                  (fun ty ->
+                    match repr ty with
+                      {desc=Tconstr(p,_,_)} when Path.flat p -> ()
+                    | _ -> raise(Error(sty.ptyp_loc, Not_a_variant ty)))
+                  abs;
+                let row = Ctype.row_normal env row in
+                (row.row_fields, abs, row.row_abs)
             | {desc=Tvar}, Some(p, _) ->
                 raise(Error(sty.ptyp_loc, Unbound_type_constructor_2 p)) 
             | _ ->
                 raise(Error(sty.ptyp_loc, Not_a_variant ty))
             in
-            List.fold_left
-              (fun fields (l, f) ->
-                let f = match present with
-                  Some present when not (List.mem l present) ->
-                    begin match f with
-                      Rpresent(Some ty) ->
-                        bound := ty :: !bound;
-                        Reither(false, [ty], false, ref None)
-                    | Rpresent None ->
-                        Reither(true, [], false, ref None)
-                    | _ ->
-                        assert false
-                    end
-                | _ -> f
-                in
-                add_typed_field sty.ptyp_loc l f fields)
-              fields fl
+            List.iter
+              (fun a ->
+                List.iter
+                  (fun (l,f) ->
+                    ignore (add_typed_field sty.ptyp_loc l f [] [a]))
+                  fields;
+                List.iter
+                  (fun a' ->
+                    if check_compat env [Ctype a] a' then () else
+                    raise(Error(sty.ptyp_loc,
+                                Incompatible_row("component", a, a'))))
+                  acl)
+              acl'; 
+            (List.fold_left
+               (fun fields (l, f) ->
+                 let f = match present with
+                   Some present when not (List.mem l present) ->
+                     begin match f with
+                       Rpresent(Some ty) ->
+                         bound := ty :: !bound;
+                         Reither(false, [ty], false, ref None)
+                     | Rpresent None ->
+                         Reither(true, [], false, ref None)
+                     | _ ->
+                         assert false
+                     end
+                 | _ -> f
+                 in
+                 add_typed_field sty.ptyp_loc l f fields acl)
+               fields fl,
+             al @ abs, acl' @ acl)
       in
-      let fields = List.fold_left add_field [] fields in
+      let fields, abs, acl = List.fold_left add_field ([],[],[]) fields in
       begin match present with None -> ()
       | Some present ->
           List.iter
@@ -348,7 +382,7 @@ let rec transl_type env policy styp =
         fields;
       let row =
         { row_fields = List.rev fields; row_more = newvar ();
-          row_bound = !bound; row_closed = closed;
+          row_abs = abs; row_bound = !bound; row_closed = closed;
           row_fixed = false; row_name = !name } in
       let static = Btype.static_row row in
       let row =
@@ -541,8 +575,8 @@ let report_error ppf = function
         Printtyp.type_expr ty'
   | Not_a_variant ty ->
       Printtyp.reset_and_mark_loops ty;
-      fprintf ppf "@[The type %a@ is not a polymorphic variant type@]"
-        Printtyp.type_expr ty
+      fprintf ppf "@[The type %a@ %s@]" Printtyp.type_expr ty
+        "is not a matchable variant type"
   | Variant_tags (lab1, lab2) ->
       fprintf ppf
         "Variant tags `%s@ and `%s have same hash value.@ Change one of them."
@@ -554,3 +588,10 @@ let report_error ppf = function
         (if v.desc = Tvar then "it escapes this scope" else
          if v.desc = Tunivar then "it is aliased to another variable"
          else "it is not a variable")
+  | Incompatible_row (kind, ty1, ty2) ->
+      Printtyp.reset_and_mark_loops_list [ty1;ty2];
+      fprintf ppf "@[<hov>%s@ The %s@;<1 2>%a@ %s@;<1 2>%a@]"
+        "Invalid variant specification."
+        kind Printtyp.type_expr ty1
+        "is not compatible with the component"
+        Printtyp.type_expr ty2

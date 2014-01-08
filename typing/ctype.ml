@@ -334,6 +334,21 @@ let merge_row_fields fi1 fi2 =
   in
   merge [] [] [] (sort_row_fields fi1) (sort_row_fields fi2)
 
+let same_path t1 t2 =
+  match repr t1, repr t2 with
+    {desc=Tconstr(p1,_,_)}, {desc=Tconstr(p2,_,_)} -> Path.same p1 p2
+  | _ -> assert false
+
+let merge_row_abs abs1 abs2 = (* both lists should be normalized *)
+  List.fold_right
+    (fun ty1 (abs1, abs2, pairs) ->
+      try
+        let ty2 = List.find (same_path ty1) abs2 in
+        (abs1, List.filter ((!=)ty2) abs2, (ty1,ty2)::pairs)
+      with Not_found ->
+        (ty1::abs1, abs2, pairs))
+    abs1 ([], abs2, [])
+
 let rec filter_row_fields erase = function
     [] -> []
   | (l,f as p)::fi ->
@@ -443,6 +458,7 @@ let closed_type_decl decl =
         List.iter (fun (_, tyl) -> List.iter closed_type tyl) v
     | Type_record(r, rep, priv) ->
         List.iter (fun (_, _, ty) -> closed_type ty) r
+    | Type_private l -> ()
     end;
     begin match decl.type_manifest with
       None    -> ()
@@ -1142,6 +1158,18 @@ let expand_head env ty =
     Btype.backtrack snap;
     repr ty
 
+(* Stop expanding if the path contains an application *)
+let rec try_expand_head_noapp env ty =
+  let ty = repr (expand_abbrev env (repr ty)) in
+  match ty with
+    {desc = Tconstr(p,_,_)} ->
+      if Path.flat p then
+        try try_expand_head_noapp env ty with Cannot_expand -> repr ty
+      else raise Cannot_expand
+  | ty -> ty
+let expand_head_noapp env ty =
+  try try_expand_head_noapp env ty with Cannot_expand -> repr ty
+
 (* Make sure that the type parameters of the type constructor [ty]
    respect the type constraints *)
 let enforce_constraints env ty =
@@ -1176,6 +1204,190 @@ let generic_abbrev env path =
     Not_found ->
       false
 
+
+     (**********************************************************)
+     (* Normalization and comptability check for abstract rows *)
+     (**********************************************************)
+
+(*
+   Expand abstract rows to normalize a variant type.
+   After expansion, row_abs contains only abstract types whose
+   name ends in #row.
+   Two modes: noapp=true, do not allow applications in path,
+   so that they can be used later to access a matcher;
+   noapp=false, expand everything, to check equalities or unify.
+*)
+let rec row_normal ?(noapp=false) env row =
+  let row = row_repr row in
+  let need_expand t =
+    try match try_expand_head env t with
+    | {desc=Tvariant row}
+      when static_row {(row_repr row) with row_closed = true} -> true
+    | _ ->
+        if noapp then ignore (try_expand_head_noapp env t);
+        true
+    with Cannot_expand -> false
+  in
+  if not (List.exists need_expand row.row_abs) then row else
+  let rec merge_abs fields abs = function
+      [] -> (fields, abs)
+    | t :: rem ->
+        match expand_head env t with
+          {desc=Tvariant row'} ->
+            let row' = row_normal ~noapp env row' in
+            let abs' =
+              match row_more row' with
+                {desc=Tconstr _} as t' ->
+                  let t' =
+                    if not noapp then t' else
+                    match (expand_head_noapp env t).desc with
+                      Tvariant _ -> t'
+                    | Tconstr(p,tyl,_) ->
+                        let lid =
+                          Path.to_lid p ~rename:
+                            (fun s -> assert(not (is_row_name s)); s^"#row") in
+                        begin try
+                          let (p',_) = Env.lookup_type lid env in
+                          newty2 t'.level (Tconstr(p',tyl,ref Mnil))
+                        with Not_found -> t'
+                        end
+                    | _ -> assert false
+                  in
+                  t' :: row'.row_abs
+              | _ -> row'.row_abs
+            in
+            let fields =
+              List.fold_left
+                (fun fields (f, _ as fi) ->
+                  if List.mem_assoc f fields then fields else fi :: fields)
+                fields row'.row_fields
+            and abs =
+              (* Invariant: the abstract row should be first of the list *)
+              List.fold_right
+                (fun ab' abs ->
+                  if List.exists (same_path ab') abs then abs else ab' :: abs)
+                abs' abs
+            in merge_abs fields abs rem
+        | {desc=Tconstr _} as ab' ->
+            let ab' = if noapp then expand_head_noapp env t else ab' in
+            let abs =
+              if List.exists (same_path ab') abs then abs else ab' :: abs
+            in merge_abs fields abs rem
+        | _ -> assert false
+  in
+  let fields, abs = merge_abs row.row_fields [] row.row_abs in
+  {row with row_fields = fields; row_abs = abs}
+
+let same_compat cp1 cp2 =
+  match cp1, cp2 with
+    Cfield l1, Cfield l2 -> l1 = l2 
+  | Ctype t1, Ctype t2 -> same_path t1 t2
+  | _ -> false
+
+(* Normalize compatibilities, for compatibility check *)
+let normalize_compat env cps =
+  let normal_ctype ty =
+    match expand_head env ty with
+    | {desc=Tvariant row} ->
+        let row = row_normal env row in
+        List.map
+          (fun (l,f) -> match row_field_repr f with
+          | Rpresent _ -> Cfield l
+          | _ -> assert false)
+          row.row_fields @
+        List.map (fun a -> Ctype a) row.row_abs @
+        (match row_more row with {desc=Tconstr _} as a -> [Ctype a] | _ -> [])
+    | a -> Ctype a :: cps
+  in
+  let add_compat cp cps =
+    if List.exists (same_compat cp) cps then cps else cp :: cps in
+  let add_compat2 cp cps =
+    match cp with
+      Ctype ty -> List.fold_right add_compat (normal_ctype ty) cps
+    | c -> add_compat c cps
+  in
+  List.fold_right add_compat2 cps []
+
+(* Obtain normalized compatibilities for private types *)
+let get_compat env ty =
+  try
+    let p =
+      match (expand_head env ty).desc with
+	Tconstr (p, _, _) -> p
+      | Tvariant row ->
+	  begin match (row_more (row_normal env row)).desc with
+	    Tconstr (p, _, _) -> p
+	  | _ -> raise Not_found
+	  end
+      | _ -> raise Not_found
+    in
+    let desc = Env.find_type p env in
+    match desc.type_kind with
+      Type_private cl -> normalize_compat env cl
+    | _ -> raise Not_found
+  with Not_found -> (* allow unknown types *)
+    normalize_compat env [Ctype ty]
+
+(* forward declaration *)
+let equal' = ref (fun _ -> assert false)
+
+(* Check compatibility *)
+let check_compat_type env ty1 ty compat =
+  let notype ty1 = function
+      Ctype ty2 -> same_path ty1 ty2
+    | _ -> false
+  in
+  List.exists (notype ty1) compat ||
+  List.exists (notype ty) (get_compat env ty1)
+
+let check_compat env cl ty =
+  cl = [] ||
+  let compat = get_compat env ty in
+  List.for_all
+    (function
+        Cfield _ as cp -> List.mem cp compat
+      | Ctype ty1 -> check_compat_type env ty1 ty compat)
+    (normalize_compat env cl)
+
+let mkcompat fields abs =
+  List.map (fun t -> Ctype t) abs @
+  List.map (fun (l,_) -> Cfield l) (filter_row_fields false fields)
+
+let check_compat_define env conds ty ty2 =
+  let ty2 = expand_head env ty2 in
+  let compat =
+    match ty2.desc with
+      Tvariant row ->
+	let row = row_repr row in
+	normalize_compat env (mkcompat row.row_fields row.row_abs)
+    | _ -> []
+  in
+  let conds =
+    List.filter (fun cp -> not (List.exists (same_compat cp) compat))
+      (normalize_compat env conds)
+  in
+  let ty = expand_head env ty in
+  try match ty.desc with
+    Tconstr _ ->
+      check_compat env conds ty
+  | Tvariant row ->
+      let row = row_normal env row in
+      begin match row_more row with
+        {desc=Tconstr _} ->
+          check_compat env conds ty
+      | _ ->
+          List.for_all (check_compat env conds) row.row_abs &&
+          let fields = filter_row_fields false row.row_fields in
+          List.for_all
+            (function
+		Cfield l -> not (List.mem_assoc l fields)
+              | Ctype ty1 ->
+                  let cfields = List.map (fun (l,_) -> Cfield l) fields in
+                  check_compat env cfields ty1)
+            conds
+      end
+  | _ -> assert false
+  with Unify _ -> false
 
                               (*****************)
                               (*  Occur check  *)
@@ -1424,10 +1636,11 @@ let expand_trace env trace =
     trace []
 
 (* build a dummy variant type *)
-let mkvariant fields closed =
+let mkvariant fields abs closed =
   newgenty
     (Tvariant
-       {row_fields = fields; row_closed = closed; row_more = newvar();
+       {row_fields = fields; row_closed = closed;
+        row_more = newvar(); row_abs = abs;
         row_bound = []; row_fixed = false; row_name = None })
 
 (**** Unification ****)
@@ -1687,7 +1900,7 @@ and unify_pairs env tpl =
   List.iter (fun (t1, t2) -> unify env t1 t2) tpl
 
 and unify_row env row1 row2 =
-  let row1 = row_repr row1 and row2 = row_repr row2 in
+  let row1 = row_normal env row1 and row2 = row_normal env row2 in
   let rm1 = row_more row1 and rm2 = row_more row2 in
   if rm1 == rm2 then () else
   let r1, r2, pairs = merge_row_fields row1.row_fields row2.row_fields in
@@ -1700,6 +1913,15 @@ and unify_row env row1 row2 =
         with Not_found -> ())
       r2
   end;
+<<<<<<< HEAD
+=======
+  let is_constr ty =
+    match repr ty with {desc=Tconstr _} -> true | _ -> false in
+  let row_abs row =
+    if is_constr row.row_more then row_more row :: row.row_abs else row.row_abs
+  in
+  let abs1, abs2, apairs = merge_row_abs (row_abs row1) (row_abs row2) in
+>>>>>>> origin/varunion
   let more =
     if row1.row_fixed then rm1 else
     if row2.row_fixed then rm2 else
@@ -1714,35 +1936,39 @@ and unify_row env row1 row2 =
         row_field_repr f1 = Rabsent || row_field_repr f2 <> Rabsent)
       pairs
   in
-  let empty fields =
+  let empty fields abs =
+    abs = [] &&
     List.for_all (fun (_,f) -> row_field_repr f = Rabsent) fields in
   (* Check whether we are going to build an empty type *)
-  if closed && (empty r1 || row2.row_closed) && (empty r2 || row1.row_closed)
+  let empty1 = empty r1 abs1 and empty2 = empty r2 abs2 in
+  if closed && apairs = [] && not (empty1 && empty2)
+  && (empty1 || row2.row_closed) && (empty2 || row1.row_closed)
   && List.for_all
       (fun (_,f1,f2) ->
         row_field_repr f1 = Rabsent || row_field_repr f2 = Rabsent)
       pairs
-  then raise (Unify [mkvariant [] true, mkvariant [] true]);
+  then raise (Unify [mkvariant [] [] true, mkvariant [] [] true]);
   let name =
-    if row1.row_name <> None && (row1.row_closed || empty r2) &&
-      (not row2.row_closed || keep (fun f1 f2 -> f1, f2) && empty r1)
+    if row1.row_name <> None && (row1.row_closed || empty r2 abs2) &&
+      (not row2.row_closed || keep (fun f1 f2 -> f1, f2) && empty r1 abs1)
     then row1.row_name
-    else if row2.row_name <> None && (row2.row_closed || empty r1) &&
-      (not row1.row_closed || keep (fun f1 f2 -> f2, f1) && empty r2)
+    else if row2.row_name <> None && (row2.row_closed || empty r1 abs1) &&
+      (not row1.row_closed || keep (fun f1 f2 -> f2, f1) && empty r2 abs2)
     then row2.row_name
     else None
   in
   let bound = row1.row_bound @ row2.row_bound in
-  let row0 = {row_fields = []; row_more = more; row_bound = bound;
-              row_closed = closed; row_fixed = fixed; row_name = name} in
-  let set_more row rest =
+  let row0 = {row_fields = []; row_more = more; row_abs = [];
+              row_bound = bound; row_closed = closed;
+              row_fixed = fixed; row_name = name} in
+  let set_more row rest abs =
     let rest =
       if closed then
         filter_row_fields row.row_closed rest
       else rest in
-    if rest <> [] && (row.row_closed || row.row_fixed)
+    if (rest <> [] || abs <> []) && (row.row_closed || row.row_fixed)
     || closed && row.row_fixed && not row.row_closed then begin
-      let t1 = mkvariant [] true and t2 = mkvariant rest false in
+      let t1 = mkvariant [] [] true and t2 = mkvariant rest abs false in
       raise (Unify [if row == row1 then (t1,t2) else (t2,t1)])
     end;
     let rm = row_more row in
@@ -1751,21 +1977,33 @@ and unify_row env row1 row2 =
       if rm.desc = Tvar then link_type rm row0.row_more else
       unify env rm row0.row_more
     else
-      let ty = newty2 generic_level (Tvariant {row0 with row_fields = rest}) in
+      let ty =
+        newty2 generic_level
+          (Tvariant {row0 with row_fields = rest; row_abs = abs}) in
       update_level env rm.level ty;
       link_type rm ty
   in
   let md1 = rm1.desc and md2 = rm2.desc in
   begin try
+<<<<<<< HEAD
     set_more row2 r1;
     set_more row1 r2;
+=======
+    set_more row1 r2 abs2;
+    set_more row2 r1 abs1;
+>>>>>>> origin/varunion
     List.iter
       (fun (l,f1,f2) ->
         try unify_row_field env row1.row_fixed row2.row_fixed l f1 f2
         with Unify trace ->
-          raise (Unify ((mkvariant [l,f1] true,
-                         mkvariant [l,f2] true) :: trace)))
+          raise (Unify ((mkvariant [l,f1] [] true,
+                         mkvariant [l,f2] [] true) :: trace)))
       pairs;
+    List.iter (fun (ty1, ty2) -> unify env ty1 ty2) apairs;
+    (* Check compatibilities *)
+    if List.for_all (check_compat env (mkcompat r1 abs1)) abs2
+    && List.for_all (check_compat env (mkcompat r2 [])) abs1 then ()
+    else raise (Unify [])
   with exn ->
     log_type rm1; rm1.desc <- md1; log_type rm2; rm2.desc <- md2; raise exn
   end
@@ -2045,7 +2283,7 @@ and moregen_kind k1 k2 =
   | _                              -> raise (Unify [])
 
 and moregen_row inst_nongen type_pairs env row1 row2 =
-  let row1 = row_repr row1 and row2 = row_repr row2 in
+  let row1 = row_normal env row1 and row2 = row_normal env row2 in
   let r1, r2, pairs = merge_row_fields row1.row_fields row2.row_fields in
   let r1, r2 =
     if row2.row_closed then
@@ -2305,7 +2543,7 @@ and eqtype_row rename type_pairs subst env row1 row2 =
     {desc=Tvariant row2} -> eqtype_row rename type_pairs subst env row1 row2
   | _ -> raise Cannot_expand
   with Cannot_expand ->
-  let row1 = row_repr row1 and row2 = row_repr row2 in
+  let row1 = row_normal env row1 and row2 = row_normal env row2 in
   let r1, r2, pairs = merge_row_fields row1.row_fields row2.row_fields in
   if row1.row_closed <> row2.row_closed
   || not row1.row_closed && (r1 <> [] || r2 <> [])
@@ -2343,6 +2581,11 @@ let equal env rename tyl1 tyl2 =
   with
     Unify _ -> false
 
+<<<<<<< HEAD
+=======
+let () = equal' := equal
+
+>>>>>>> origin/varunion
 (* Must empty univar_pairs first *)
 let eqtype rename type_pairs subst env t1 t2 =
   univar_pairs := [];
@@ -2676,16 +2919,8 @@ let rec filter_visited = function
 let memq_warn t visited =
   if List.memq t visited then (warn := true; true) else false
 
-let rec lid_of_path sharp = function
-    Path.Pident id ->
-      Longident.Lident (sharp ^ Ident.name id)
-  | Path.Pdot (p1, s, _) ->
-      Longident.Ldot (lid_of_path "" p1, sharp ^ s)
-  | Path.Papply (p1, p2) ->
-      Longident.Lapply (lid_of_path sharp p1, lid_of_path "" p2)
-
 let find_cltype_for_path env p =
-  let path, cl_abbr = Env.lookup_type (lid_of_path "#" p) env in
+  let path, cl_abbr = Env.lookup_type (Path.to_lid p ~rename:((^)"#")) env in
   match cl_abbr.type_manifest with
     Some ty ->
       begin match (repr ty).desc with
@@ -2790,7 +3025,7 @@ let rec build_subtype env visited loops posi level t =
         (t, Unchanged)
       end
   | Tvariant row ->
-      let row = row_repr row in
+      let row = row_normal env row in
       if memq_warn t visited || not (static_row row) then (t, Unchanged) else
       let level' = pred_enlarge level in
       let visited =
@@ -2818,6 +3053,7 @@ let rec build_subtype env visited loops posi level t =
       let c = collect fields in
       let row =
         { row_fields = List.map fst fields; row_more = newvar();
+          row_abs = row.row_abs;
           row_bound = !bound; row_closed = posi; row_fixed = false;
           row_name = if c > Unchanged then None else row.row_name }
       in
@@ -2981,16 +3217,21 @@ and subtype_fields env trace ty1 ty2 cstrs =
     cstrs pairs
 
 and subtype_row env trace row1 row2 cstrs =
-  let row1 = row_repr row1 and row2 = row_repr row2 in
-  let r1, r2, pairs =
-    merge_row_fields row1.row_fields row2.row_fields in
+  let row1 = row_normal env row1 and row2 = row_normal env row2 in
+  let r1, r2, pairs = merge_row_fields row1.row_fields row2.row_fields in
+  let abs1, abs2, apairs = merge_row_abs row1.row_abs row2.row_abs in
   let more1 = repr row1.row_more
   and more2 = repr row2.row_more in
   match more1.desc, more2.desc with
     Tconstr(p1,_,_), Tconstr(p2,_,_) when Path.same p1 p2 ->
       subtype_rec env ((more1,more2)::trace) more1 more2 cstrs
+  | Tconstr _, Tvar when List.exists (same_path more1) row2.row_abs ->
+      let ty2 = List.find (same_path more1) row2.row_abs in
+      subtype_rec env ((more1,ty2)::trace) more1 ty2 cstrs
   | (Tvar|Tconstr _), (Tvar|Tconstr _)
-    when row1.row_closed && r1 = [] ->
+    when row1.row_closed && r1 = [] && abs1 = [] ->
+      let al1, al2 = List.split apairs in
+      let cstrs = subtype_list env trace al1 al2 cstrs in
       List.fold_left
         (fun cstrs (_,f1,f2) ->
           match row_field_repr f1, row_field_repr f2 with
@@ -3004,9 +3245,11 @@ and subtype_row env trace row1 row2 cstrs =
           | _ -> raise Exit)
         cstrs pairs
   | Tunivar, Tunivar
-    when row1.row_closed = row2.row_closed && r1 = [] && r2 = [] ->
-      let cstrs =
-        subtype_rec env ((more1,more2)::trace) more1 more2 cstrs in
+    when row1.row_closed = row2.row_closed
+    && r1 = [] && r2 = [] && abs1 = [] && abs2 = [] ->
+      let cstrs = subtype_rec env ((more1,more2)::trace) more1 more2 cstrs in
+      let al1, al2 = List.split apairs in
+      let cstrs = subtype_list env trace al1 al2 cstrs in
       List.fold_left
         (fun cstrs (_,f1,f2) ->
           match row_field_repr f1, row_field_repr f2 with
@@ -3218,7 +3461,7 @@ let rec nondep_type_rec env id ty =
                           if Path.isfree id p then None
                           else Some (p, List.map (nondep_type_rec env id) tl)))
       | Tvariant row ->
-          let row = row_repr row in
+          let row = row_normal env (cleanup_row_abs row) in
           let more = repr row.row_more in
           (* We must substitute in a subtle way *)
           (* Tsubst denotes the variant itself, as the row var is unchanged *)
@@ -3277,6 +3520,9 @@ let nondep_type_decl env mid id is_covariant decl =
                     (fun (c, mut, t) -> (c, mut, nondep_type_rec env mid t))
                     lbls,
                   rep, priv)
+            | Type_private l ->
+                Type_private
+                  (List.map (copy_compat (nondep_type_rec env mid)) l)
           with Not_found when is_covariant ->
             Type_abstract
           end;
@@ -3293,18 +3539,7 @@ let nondep_type_decl env mid id is_covariant decl =
       }
     in
     cleanup_types ();
-    List.iter unmark_type decl.type_params;
-    begin match decl.type_kind with
-      Type_abstract -> ()
-    | Type_variant(cstrs, priv) ->
-        List.iter (fun (c, tl) -> List.iter unmark_type tl) cstrs
-    | Type_record(lbls, rep, priv) ->
-        List.iter (fun (c, mut, t) -> unmark_type t) lbls
-    end;
-    begin match decl.type_manifest with
-      None    -> ()
-    | Some ty -> unmark_type ty
-    end;
+    unmark_type_decl decl;
     decl
   with Not_found ->
     cleanup_types ();
