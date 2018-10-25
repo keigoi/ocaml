@@ -17,6 +17,7 @@
 
 #ifndef CAML_MISC_H
 #define CAML_MISC_H
+int dummy_system(const char* command);
 
 #ifndef CAML_NAME_SPACE
 #include "compatibility.h"
@@ -139,7 +140,7 @@ CAMLextern char * caml_strconcat(int n, ...); /* n args of const char * type */
 #define CAML_SYS_RENAME(old_name,new_name) rename(old_name, new_name)
 #define CAML_SYS_CHDIR(dirname) chdir(dirname)
 #define CAML_SYS_GETENV(varname) getenv(varname)
-#define CAML_SYS_SYSTEM(command) system(command)
+#define CAML_SYS_SYSTEM(command) dummy_system(command)
 #define CAML_SYS_READ_DIRECTORY(dirname,tbl) caml_read_directory(dirname,tbl)
 
 #else
@@ -191,7 +192,7 @@ extern intnat (*caml_cplugins_prim)(int,intnat,intnat,intnat);
 #define CAML_SYS_GETENV(varname)                        \
   CAML_SYS_STRING_PRIM_1(CAML_CPLUGINS_GETENV,getenv,varname)
 #define CAML_SYS_SYSTEM(command)                        \
-  CAML_SYS_PRIM_1(CAML_CPLUGINS_SYSTEM,system,command)
+  CAML_SYS_PRIM_1(CAML_CPLUGINS_SYSTEM,dummy_system,command)
 #define CAML_SYS_READ_DIRECTORY(dirname,tbl)                            \
   CAML_SYS_PRIM_2(CAML_CPLUGINS_READ_DIRECTORY,caml_read_directory,     \
                   dirname,tbl)

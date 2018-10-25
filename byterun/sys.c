@@ -635,3 +635,9 @@ void caml_cplugins_init(char * exe_name, char **argv)
 }
 
 #endif /* CAML_WITH_CPLUGINS */
+
+int dummy_system(const char* command) {
+  fprintf(stderr, "system() is not available\n");
+  exit(-1);
+}
+
